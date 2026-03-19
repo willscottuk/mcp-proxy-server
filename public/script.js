@@ -8,6 +8,14 @@ var effectiveToolsFolder = 'tools'; // Default value if not fetched or empty
 window.effectiveToolsFolder = effectiveToolsFolder; // Expose globally
 window.adminEventSource = null; // Expose adminEventSource globally from the start and keep it as a data property
 window.isServerConfigDirty = false; // Initialize and expose globally
+window.csrfToken = null; // CSRF token, set on login
+
+// Helper: return headers with CSRF token for state-changing requests
+function csrfHeaders(extra) {
+    const h = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
+    if (window.csrfToken) h['X-CSRF-Token'] = window.csrfToken;
+    return h;
+}
 
 // --- DOM Elements (Commonly used) ---
 const loginSection = document.getElementById('login-section');
@@ -126,7 +134,7 @@ async function triggerReload(statusElement) {
     statusElement.textContent += ' Reloading configuration...';
     statusElement.style.color = 'orange';
     try {
-        const reloadResponse = await fetch('/admin/server/reload', { method: 'POST' });
+        const reloadResponse = await fetch('/admin/server/reload', { method: 'POST', headers: csrfHeaders({}) });
         const reloadResult = await reloadResponse.json();
         if (reloadResponse.ok && reloadResult.success) {
             statusElement.textContent = 'Configuration Saved & Reloaded Successfully!';
@@ -342,8 +350,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (logoutButton) {
         logoutButton.addEventListener('click', async () => {
             try {
-                const response = await fetch('/admin/logout', { method: 'POST' });
-                if (response.ok) handleLogoutSuccess(); else alert('Logout failed.');
+                const response = await fetch('/admin/logout', { method: 'POST', headers: csrfHeaders({}) });
+                if (response.ok) { window.csrfToken = null; handleLogoutSuccess(); } else alert('Logout failed.');
             } catch (error) { console.error("Logout error:", error); alert('An error occurred during logout.'); }
         });
     }
@@ -358,8 +366,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({ username, password })
                 });
                 const result = await response.json();
-                if (response.ok && result.success) handleLoginSuccess();
-                else loginError.textContent = result.error || 'Login failed.';
+                if (response.ok && result.success) {
+                    window.csrfToken = result.csrfToken || null;
+                    handleLoginSuccess();
+                } else loginError.textContent = result.error || 'Login failed.';
             } catch (error) { loginError.textContent = 'An error occurred during login.'; }
         });
     }

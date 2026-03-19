@@ -3,6 +3,8 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport, StreamableHTTPServerTransportOptions } from "@modelcontextprotocol/sdk/server/streamableHttp.js"; // Import StreamableHTTPServerTransport and options
 import express, { Request, Response, NextFunction } from "express";
 import session from 'express-session';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { ServerResponse } from "node:http"; // Import ServerResponse
 import { readFile, writeFile, access, mkdir } from 'fs/promises';
 import path from 'path';
@@ -23,13 +25,50 @@ import { terminalRouter, activeTerminals, TERMINAL_OUTPUT_SSE_CONNECTIONS, Activ
 
 const exec = promisify(execCallback);
 
+// Allowlist of permitted executable names for install commands (Issue 2)
+const ALLOWED_INSTALL_COMMANDS = new Set([
+    'npm', 'npx', 'pip', 'pip3', 'python', 'python3', 'node',
+    'git', 'yarn', 'pnpm', 'uv', 'uvx', 'bun', 'bunx',
+]);
+
+// Shell-word tokenizer for install commands — no shell: true needed (Issue 2)
+function parseInstallCommand(command: string): string[] {
+    const tokens: string[] = [];
+    let token = '';
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < command.length; i++) {
+        const c = command[i];
+        if (inSingle) {
+            if (c === "'") inSingle = false;
+            else token += c;
+        } else if (inDouble) {
+            if (c === '"') inDouble = false;
+            else if (c === '\\' && i + 1 < command.length) { token += command[++i]; }
+            else token += c;
+        } else if (c === "'") {
+            inSingle = true;
+        } else if (c === '"') {
+            inDouble = true;
+        } else if (c === ' ' || c === '\t') {
+            if (token) { tokens.push(token); token = ''; }
+        } else {
+            token += c;
+        }
+    }
+    if (token) tokens.push(token);
+    return tokens;
+}
+
 declare module 'express-session' {
   interface SessionData {
     user?: { username: string };
+    csrfToken?: string;
   }
 }
 
 const app = express();
+app.use(helmet());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 const expressServer = http.createServer(app);
@@ -62,8 +101,12 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'password';
 const SESSION_SECRET_ENV = process.env.SESSION_SECRET; // Read from env
 
-if (ADMIN_PASSWORD === 'password') {
-    logger.warn("WARNING: Using default admin password. Set ADMIN_PASSWORD environment variable for security.");
+if (ADMIN_USERNAME === 'admin' || ADMIN_PASSWORD === 'password') {
+    if (process.env.NODE_ENV === 'production') {
+        logger.error("FATAL: Default admin credentials detected in production. Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables before starting.");
+        process.exit(1);
+    }
+    logger.warn("WARNING: Using default admin credentials. Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables for security.");
 }
 // SESSION_SECRET warning is handled in getSessionSecret
 
@@ -72,6 +115,11 @@ const rawEnableAdminUI = process.env.ENABLE_ADMIN_UI;
 // Enable Admin UI if ENABLE_ADMIN_UI is 'true' (case-insensitive), '1', or 'yes' (case-insensitive).
 // Defaults to false if not set, empty, or any other value.
 const enableAdminUI = typeof rawEnableAdminUI === 'string' && (rawEnableAdminUI.toLowerCase() === 'true' || rawEnableAdminUI === '1' || rawEnableAdminUI.toLowerCase() === 'yes');
+
+const rawStatelessHttp = process.env.STATELESS_HTTP;
+const statelessHttp = typeof rawStatelessHttp === 'string' &&
+  (rawStatelessHttp.toLowerCase() === 'true' || rawStatelessHttp === '1' || rawStatelessHttp.toLowerCase() === 'yes');
+logger.log(`Stateless HTTP mode: ${statelessHttp}`);
 
 async function getSessionSecret(): Promise<string> {
     if (SESSION_SECRET_ENV && SESSION_SECRET_ENV !== 'unsafe-default-secret' && SESSION_SECRET_ENV.trim() !== '') {
@@ -106,9 +154,8 @@ async function getSessionSecret(): Promise<string> {
         logger.log(`New session secret generated and saved to ${SECRET_FILE_PATH}. It's recommended to set this value in the SESSION_SECRET environment variable for persistence across container restarts or deployments.`);
         return newSecret;
     } catch (writeError) {
-        logger.error("FATAL: Could not write new session secret file:", writeError);
-        logger.warn("WARNING: Falling back to a temporary, insecure session secret. Admin UI sessions will not persist.");
-        return 'temporary-insecure-secret-' + crypto.randomBytes(16).toString('hex'); // Fallback, but not ideal
+        logger.error("FATAL: Could not write session secret file. Exiting for security.", writeError);
+        process.exit(1);
     }
 }
 
@@ -118,11 +165,6 @@ const adminSseConnections = new Map<string, ServerResponse>();
 
 if (enableAdminUI) {
     logger.log("Admin UI is ENABLED.");
-    // Use global ADMIN_USERNAME and ADMIN_PASSWORD defined earlier.
-
-    if (ADMIN_PASSWORD === 'password') { // Use global ADMIN_PASSWORD
-        logger.warn("WARNING: Using default admin password. Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables for security.");
-    }
 
     const sessionSecret = await getSessionSecret();
 
@@ -130,7 +172,12 @@ if (enableAdminUI) {
         secret: sessionSecret,
         resave: false,
         saveUninitialized: false,
-        cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 1000 * 60 * 60 * 24 }
+        cookie: {
+            secure: process.env.NODE_ENV === 'production',
+            httpOnly: true,
+            sameSite: 'strict',
+            maxAge: 1000 * 60 * 60 // 1 hour
+        }
     }));
 
     const isAuthenticated = (req: Request, res: Response, next: NextFunction) => {
@@ -145,13 +192,42 @@ if (enableAdminUI) {
         }
     };
 
+    const csrfProtect = (req: Request, res: Response, next: NextFunction) => {
+        const token = req.headers['x-csrf-token'] as string | undefined;
+        if (!token || !req.session.csrfToken || token !== req.session.csrfToken) {
+            return res.status(403).json({ error: 'Invalid CSRF token' });
+        }
+        next();
+    };
 
-    app.post('/admin/login', (req, res) => {
+    const loginRateLimiter = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 10,
+        message: { success: false, error: 'Too many login attempts. Please try again later.' },
+        standardHeaders: true,
+        legacyHeaders: false,
+    });
+
+    app.post('/admin/login', loginRateLimiter, (req, res) => {
         const { username, password } = req.body;
         if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-            req.session.user = { username: username };
-            logger.log(`Admin user '${username}' logged in.`);
-            res.json({ success: true });
+            req.session.regenerate((err) => {
+                if (err) {
+                    logger.error("Error regenerating session on login:", err);
+                    return res.status(500).json({ success: false, error: 'Session error' });
+                }
+                req.session.user = { username };
+                req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+                const csrfToken = req.session.csrfToken;
+                req.session.save((saveErr) => {
+                    if (saveErr) {
+                        logger.error("Error saving session on login:", saveErr);
+                        return res.status(500).json({ success: false, error: 'Session error' });
+                    }
+                    logger.log(`Admin user '${username}' logged in.`);
+                    res.json({ success: true, csrfToken });
+                });
+            });
         } else {
             logger.warn(`Failed admin login attempt for username: '${username}'`);
             res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -187,7 +263,7 @@ if (enableAdminUI) {
         }
     });
 
-    app.post('/admin/config', isAuthenticated, async (req, res) => {
+    app.post('/admin/config', isAuthenticated, csrfProtect, async (req, res) => {
         try {
             logger.log("Admin request: POST /admin/config");
             const newConfigData = req.body;
@@ -239,7 +315,7 @@ if (enableAdminUI) {
         }
     });
 
-    app.post('/admin/tools/config', isAuthenticated, async (req, res) => {
+    app.post('/admin/tools/config', isAuthenticated, csrfProtect, async (req, res) => {
         try {
             logger.log("Admin request: POST /admin/tools/config");
             const newToolConfigData = req.body;
@@ -258,7 +334,7 @@ if (enableAdminUI) {
         }
     });
     // Renamed endpoint and updated logic for in-process reload
-    app.post('/admin/server/reload', isAuthenticated, async (req, res) => {
+    app.post('/admin/server/reload', isAuthenticated, csrfProtect, async (req, res) => {
         logger.log(`Admin request: POST /admin/server/reload by user '${req.session.user?.username}'`);
         try {
             await Sentry.startSpan({ name: 'admin.config_reload', op: 'admin.action' }, async () => {
@@ -275,7 +351,7 @@ if (enableAdminUI) {
 
         } catch (error: any) {
             logger.error("Error during configuration reload:", error);
-            res.status(500).json({ success: false, error: 'Failed to reload server configuration.', details: error.message });
+            res.status(500).json({ success: false, error: 'Failed to reload server configuration.' });
         }
     });
 
@@ -296,10 +372,17 @@ if (enableAdminUI) {
 
 
     // Modified install endpoint to use spawn and send SSE updates
-    app.post('/admin/server/install/:serverKey', isAuthenticated, async (req, res) => {
+    app.post('/admin/server/install/:serverKey', isAuthenticated, csrfProtect, async (req, res) => {
         const serverKey = req.params.serverKey;
         const adminSessionId = req.session.id; // Get current admin's session ID
         const clientId = req.ip || `admin-${Date.now()}`; // For logging
+
+        // Issue 9: Validate serverKey to prevent path traversal
+        const serverKeyPattern = /^[a-zA-Z0-9_-]+$/;
+        if (!serverKeyPattern.test(serverKey)) {
+            logger.warn(`[${clientId}] Invalid serverKey format rejected: '${serverKey}'`);
+            return res.status(400).json({ success: false, error: `Invalid server key format: '${serverKey}'` });
+        }
 
         logger.log(`[${clientId}] Admin request: POST /admin/server/install/${serverKey} for session ${adminSessionId}`);
         logger.warn(`[${clientId}] SECURITY WARNING: Attempting to execute installation commands for server '${serverKey}'.`);
@@ -315,8 +398,9 @@ if (enableAdminUI) {
             const sendAdminSseEvent = (event: string, data: any) => {
                 if (adminRes && !adminRes.writableEnded) { // Check if connection exists and is writable
                     try {
-                        // Ensure data is stringified to handle objects and special characters
-                        adminRes.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+                        // Sanitize event name to prevent SSE header injection (strip newlines)
+                        const safeEvent = event.replace(/[\r\n]/g, '');
+                        adminRes.write(`event: ${safeEvent}\ndata: ${JSON.stringify(data)}\n\n`);
                     } catch (e) {
                         logger.error(`[${clientId}] Failed to send admin SSE event ${event} for session ${adminSessionId}:`, e);
                     }
@@ -399,14 +483,25 @@ if (enableAdminUI) {
                         logger.log(`Executing: ${command}`);
                         sendAdminSseEvent('install_info', { serverKey, message: `Executing: ${command}` });
 
-                        const commandParts = command.split(' ');
-                        const cmd = commandParts[0];
-                        const args = commandParts.slice(1);
+                        const parts = parseInstallCommand(command);
+                        if (parts.length === 0) {
+                            const errorMsg = `Empty command in installation commands.`;
+                            sendAdminSseEvent('install_error', { serverKey, error: errorMsg });
+                            throw new Error(errorMsg);
+                        }
+                        const cmd = parts[0];
+                        const args = parts.slice(1);
+                        const cmdBasename = path.basename(cmd);
+                        if (!ALLOWED_INSTALL_COMMANDS.has(cmdBasename)) {
+                            const errorMsg = `Command '${cmdBasename}' is not permitted. Allowed commands: ${[...ALLOWED_INSTALL_COMMANDS].join(', ')}.`;
+                            logger.warn(`[${clientId}] ${errorMsg}`);
+                            sendAdminSseEvent('install_error', { serverKey, error: errorMsg });
+                            throw new Error(errorMsg);
+                        }
 
                         const child = spawn(cmd, args, {
-                            shell: true, 
                             cwd: executionCwd, // Execute in the calculated parent directory
-                            stdio: ['ignore', 'pipe', 'pipe'] 
+                            stdio: ['ignore', 'pipe', 'pipe']
                         });
 
                         // Stream stdout
@@ -691,6 +786,23 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
     }
   }
 
+  if (statelessHttp) {
+    const statelessTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: false,
+    });
+    try {
+      await server.connect(statelessTransport);
+      await statelessTransport.handleRequest(req, res, req.body);
+    } catch (error: any) {
+      logger.error(`[${clientId}] /mcp (stateless): Error handling request:`, error);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: `Internal error: ${error.message}` }, id: (req.body as any)?.id ?? null });
+      }
+    }
+    return;
+  }
+
   let httpTransport: StreamableHTTPServerTransport | undefined;
   const clientProvidedSessionId = req.headers['mcp-session-id'] as string | undefined;
   let transportSessionIdToUse: string | undefined = clientProvidedSessionId;
@@ -894,9 +1006,7 @@ expressServer.listen(PORT, () => {
   logger.log(`Streamable HTTP (MCP) endpoint: ${baseUrl}/mcp`);
 
   if (authEnabled && allowedKeys.size > 0) {
-    const firstKey = allowedKeys.values().next().value;
-    logger.log(`Example authenticated SSE endpoint: ${baseUrl}/sse?key=${firstKey}`);
-    logger.log(`Example authenticated MCP endpoint: ${baseUrl}/mcp?key=${firstKey} (or use X-Api-Key header)`);
+    logger.log(`API key authentication is enabled (${allowedKeys.size} key(s)). Pass via 'key' query param or 'X-Api-Key' header.`);
   }
 
   if (enableAdminUI) {

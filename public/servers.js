@@ -271,7 +271,7 @@ async function handleInstallClick(serverKey) {
     try {
         const response = await fetch(`/admin/server/install/${serverKey}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: typeof csrfHeaders === 'function' ? csrfHeaders({}) : { 'Content-Type': 'application/json' },
         });
         const result = await response.json();
 
@@ -416,7 +416,7 @@ function initializeServerSaveListener() {
         try {
             const response = await fetch('/admin/config', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: typeof csrfHeaders === 'function' ? csrfHeaders({}) : { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newConfig)
             });
             const result = await response.json();

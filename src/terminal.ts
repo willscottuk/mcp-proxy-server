@@ -25,14 +25,27 @@ const MAX_BUFFER_LENGTH = 200; // Max number of lines/chunks to buffer
 
 // --- PTY Management Functions ---
 
+// Strip known-sensitive variables before passing env to a terminal shell (Issue 11)
+const SENSITIVE_ENV_PATTERN = /^(SESSION_SECRET|ADMIN_PASSWORD|ADMIN_USERNAME|ALLOWED_KEYS|ALLOWED_TOKENS|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|DATABASE_URL|DB_PASSWORD|PRIVATE_KEY|.*_SECRET|.*_PASSWORD|.*_TOKEN|.*_CREDENTIAL)/i;
+
+function buildTerminalEnv(): { [key: string]: string } {
+    const filtered: { [key: string]: string } = {};
+    for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined && !SENSITIVE_ENV_PATTERN.test(k)) {
+            filtered[k] = v;
+        }
+    }
+    return filtered;
+}
+
 function startPtyProcess(): ActiveTerminal {
     const termId = crypto.randomUUID();
     const ptyProcess = pty.spawn(shell, [], {
         name: 'xterm-color',
         cols: 80, // Default size
         rows: 30,
-        cwd: process.env.HOME || process.cwd(), 
-        env: process.env as { [key: string]: string } 
+        cwd: process.env.HOME || process.cwd(),
+        env: buildTerminalEnv()
     });
 
     const terminal: ActiveTerminal = {

@@ -1,9 +1,9 @@
 {
   "name": "mcp-proxy-server",
   "version": "0.4.1",
-  "author": "ptbsare",
+  "author": "willscottuk",
   "license": "MIT",
-  "description": "An MCP proxy server that aggregates and serves multiple MCP resource servers through a single interface with stdio/sse support",
+  "description": "An MCP proxy server that aggregates and serves multiple MCP resource servers through a single interface with stdio/sse support. Based on original work by @ptbsare",
   "private": true,
   "type": "module",
   "bin": {
@@ -23,13 +23,14 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.12.0",
     "@sentry/node": "^9.47.1",
-    "@types/cors": "^2.8.17",
     "@types/express-session": "^1.18.1",
-    "cors": "^2.8.5",
     "eventsource": "^4.0.0",
     "express": "^4.21.1",
+    "express-rate-limit": "^7.5.0",
     "express-session": "^1.18.1",
+    "helmet": "^8.0.0",
     "node-pty": "^1.0.0",
+    "zod": "^3.23.8",
     "zod-to-json-schema": "^3.23.5"
   },
   "devDependencies": {

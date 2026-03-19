@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { logger } from './logger.js';
+import { z } from 'zod';
 
 export type TransportConfigStdio = {
   type: 'stdio';
@@ -68,6 +69,60 @@ export interface ToolConfig {
 }
 
 
+// Zod schemas for config validation (Issue 14)
+const TransportConfigStdioSchema = z.object({
+    type: z.literal('stdio'),
+    name: z.string().optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+    active: z.boolean().optional(),
+    installDirectory: z.string().optional(),
+    installCommands: z.array(z.string()).optional(),
+});
+
+const TransportConfigSSESchema = z.object({
+    type: z.literal('sse'),
+    name: z.string().optional(),
+    url: z.string().url(),
+    active: z.boolean().optional(),
+    apiKey: z.string().optional(),
+    bearerToken: z.string().optional(),
+});
+
+const TransportConfigHTTPSchema = z.object({
+    type: z.literal('http'),
+    name: z.string().optional(),
+    url: z.string().url(),
+    active: z.boolean().optional(),
+    apiKey: z.string().optional(),
+    bearerToken: z.string().optional(),
+});
+
+const TransportConfigSchema = z.discriminatedUnion('type', [
+    TransportConfigStdioSchema,
+    TransportConfigSSESchema,
+    TransportConfigHTTPSchema,
+]);
+
+const ProxySettingsSchema = z.object({
+    retrySseToolCall: z.boolean().optional(),
+    sseToolCallMaxRetries: z.number().int().nonnegative().optional(),
+    sseToolCallRetryDelayBaseMs: z.number().int().nonnegative().optional(),
+    retryHttpToolCall: z.boolean().optional(),
+    httpToolCallMaxRetries: z.number().int().nonnegative().optional(),
+    httpToolCallRetryDelayBaseMs: z.number().int().nonnegative().optional(),
+    retryStdioToolCall: z.boolean().optional(),
+    stdioToolCallMaxRetries: z.number().int().nonnegative().optional(),
+    stdioToolCallRetryDelayBaseMs: z.number().int().nonnegative().optional(),
+}).optional();
+
+const ConfigSchema = z.object({
+    mcpServers: z.record(TransportConfigSchema),
+    proxy: ProxySettingsSchema,
+    serverToolnameSeparator: z.string().optional(),
+});
+
 export function isSSEConfig(config: TransportConfig): config is TransportConfigSSE {
   return config.type === 'sse';
 }
@@ -119,11 +174,14 @@ export const loadConfig = async (): Promise<Config> => {
     const configPath = resolve(process.cwd(), 'config', 'mcp_server.json');
     console.log(`Attempting to load configuration from: ${configPath}`);
     const fileContents = await readFile(configPath, 'utf-8');
-    const parsedConfig = JSON.parse(fileContents) as Config;
+    const rawConfig = JSON.parse(fileContents);
 
-    if (typeof parsedConfig !== 'object' || parsedConfig === null || typeof parsedConfig.mcpServers !== 'object') {
-      throw new Error('Invalid config format: mcpServers object not found.');
+    const validationResult = ConfigSchema.safeParse(rawConfig);
+    if (!validationResult.success) {
+      const issues = validationResult.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ');
+      throw new Error(`Invalid config format: ${issues}`);
     }
+    const parsedConfig = validationResult.data as Config;
 
     // Initialize proxy object on parsedConfig if it doesn't exist
     parsedConfig.proxy = parsedConfig.proxy || {};

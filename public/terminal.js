@@ -33,7 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`Resizing terminal ${termId} to ${newCols}x${newRows}`);
                 fetch(`/admin/terminal/${termId}/resize`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: typeof csrfHeaders === 'function' ? csrfHeaders({}) : { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ cols: newCols, rows: newRows })
                 }).catch(err => console.error('Error sending resize:', err));
                 lastCols = newCols;
@@ -121,7 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateStatus('Starting Session...', 'disconnected');
         try {
             console.log("Requesting new terminal session...");
-            const response = await fetch('/admin/terminal/start', { method: 'POST' });
+            const response = await fetch('/admin/terminal/start', { method: 'POST', headers: typeof csrfHeaders === 'function' ? csrfHeaders({}) : {} });
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response' }));
                 throw new Error(`Failed to start terminal: ${response.status} ${response.statusText} - ${errorData.error}`);
@@ -154,7 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (termId && termSSE && termSSE.readyState === EventSource.OPEN) {
                         fetch(`/admin/terminal/${termId}/input`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: typeof csrfHeaders === 'function' ? csrfHeaders({}) : { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ input: data })
                         }).catch(err => console.error('Error sending input:', err));
                     } else {

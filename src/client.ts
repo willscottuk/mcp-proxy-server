@@ -9,6 +9,27 @@ import { logger } from './logger.js'; // Import logger functions
 import { Sentry } from './instrumentation.js';
 
 const sleep = (time: number) => new Promise<void>(resolve => setTimeout(() => resolve(), time))
+
+// Validate backend URLs to prevent SSRF (Issue 8)
+function validateBackendUrl(url: string, name: string): void {
+    let parsed: URL;
+    try {
+        parsed = new URL(url);
+    } catch {
+        throw new Error(`Invalid URL configured for backend '${name}': ${url}`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error(`Backend '${name}' uses disallowed protocol '${parsed.protocol}'. Only http: and https: are permitted.`);
+    }
+    // Block well-known cloud metadata endpoints unless explicitly allowed
+    if (process.env.ALLOW_PRIVATE_BACKENDS !== 'true') {
+        const h = parsed.hostname;
+        // 169.254.x.x covers AWS/Azure/GCP instance metadata
+        if (/^169\.254\./.test(h)) {
+            throw new Error(`Backend '${name}' URL targets a cloud metadata address (${h}). Set ALLOW_PRIVATE_BACKENDS=true to allow.`);
+        }
+    }
+}
 export interface ConnectedClient {
   client: Client;
   cleanup: () => Promise<void>;
@@ -24,6 +45,7 @@ const createClient = (name: string, transportConfig: TransportConfig): { client:
   try {
     if (isSSEConfig(transportConfig)) {
       transportType = 'sse';
+      validateBackendUrl(transportConfig.url, name);
       const transportOptions: SSEClientTransportOptions = {};
       let customHeaders: Record<string, string> | undefined;
 
@@ -77,6 +99,7 @@ const createClient = (name: string, transportConfig: TransportConfig): { client:
        });
      } else if (isHttpConfig(transportConfig)) {
        transportType = 'http';
+       validateBackendUrl(transportConfig.url, name);
        const transportOptions: StreamableHTTPClientTransportOptions = {};
        let customHeaders: Record<string, string> | undefined;
 
@@ -220,6 +243,7 @@ export async function reconnectSingleClient(
   try {
     if (isSSEConfig(transportConfig)) {
       determinedTransportType = 'sse';
+      validateBackendUrl(transportConfig.url, name);
       const transportOptions: SSEClientTransportOptions = {};
       let customHeaders: Record<string, string> | undefined;
       if (transportConfig.bearerToken) {
@@ -260,6 +284,7 @@ export async function reconnectSingleClient(
       logger.debug(`  Configured Stdio transport for ${name} (reconnect)`); // Changed to debug
     } else if (isHttpConfig(transportConfig)) {
       determinedTransportType = 'http';
+      validateBackendUrl(transportConfig.url, name);
       const transportOptions: StreamableHTTPClientTransportOptions = {};
       let customHeaders: Record<string, string> | undefined;
       if (transportConfig.bearerToken) {

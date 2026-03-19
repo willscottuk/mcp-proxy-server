@@ -270,7 +270,7 @@ function initializeToolSaveListener() {
             saveToolStatus.textContent = 'Saving tool configuration...'; // Update status after validation
             const response = await fetch('/admin/tools/config', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: typeof csrfHeaders === 'function' ? csrfHeaders({}) : { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newToolConfig)
             });
             const result = await response.json();
