@@ -1,6 +1,5 @@
 # MCP Proxy Server
 
-[简体中文](README_ZH.md)
 ## ✨ Key Features Highlight
 
 *   **🌐 Web UI Management:** Easily manage all connected MCP servers through an intuitive web interface (optional, requires enabling).
