@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/node';
-import { version } from '../package.json';
+import { createRequire } from 'module';
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
 const dsn = process.env.SENTRY_DSN;
 export const isSentryEnabled = Boolean(dsn);
