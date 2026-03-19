@@ -6,6 +6,7 @@ import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { TransportConfig, isSSEConfig, isStdioConfig, isHttpConfig } from './config.js';
 import { EventSource } from 'eventsource';
 import { logger } from './logger.js'; // Import logger functions
+import { Sentry } from './instrumentation.js';
 
 const sleep = (time: number) => new Promise<void>(resolve => setTimeout(() => resolve(), time))
 export interface ConnectedClient {
@@ -143,7 +144,14 @@ export const createClients = async (mcpServers: Record<string, TransportConfig>)
       }
 
       try {
-        await client.connect(transport);
+        await Sentry.startSpan(
+          {
+            name: `backend_connect/${name}`,
+            op: 'proxy.backend_connect',
+            attributes: { 'mcp.server.key': name, 'mcp.server.transport_type': transportType, attempt: count + 1 },
+          },
+          () => client.connect(transport)
+        );
         logger.log(`Connected to server: ${name}`); // Changed to log
 
         clients.push({
@@ -160,6 +168,7 @@ export const createClients = async (mcpServers: Record<string, TransportConfig>)
 
       } catch (error: any) {
         logger.error(`Failed to connect to ${name}: ${error.message}`); // Log error message
+        Sentry.addBreadcrumb({ category: 'backend_connect', message: `Connection attempt ${count + 1} to ${name} failed: ${error.message}`, level: 'warning' });
         count++;
         retry = (count < retries);
         if (retry) {
@@ -168,6 +177,11 @@ export const createClients = async (mcpServers: Record<string, TransportConfig>)
           } catch { }
           logger.log(`Retry connection to ${name} in ${waitFor}ms (${count}/${retries})`); // Changed to log
           await sleep(waitFor);
+        } else {
+          Sentry.withScope(scope => {
+            scope.setTag('mcp.server_key', name);
+            Sentry.captureException(error);
+          });
         }
       }
 
@@ -186,6 +200,9 @@ export async function reconnectSingleClient(
   transportConfig: TransportConfig,
   existingCleanup?: () => Promise<void>
 ): Promise<Omit<ConnectedClient, 'name'>> { // Returns the parts needed to reconstruct a ConnectedClient
+  return Sentry.startSpan(
+    { name: `backend_reconnect/${name}`, op: 'proxy.backend_reconnect', attributes: { 'mcp.server.key': name } },
+    async () => {
   logger.log(`Attempting to reconnect client: ${name}`); // Changed to log
 
   if (existingCleanup) {
@@ -291,6 +308,10 @@ export async function reconnectSingleClient(
     };
   } catch (error: any) {
     logger.error(`Failed to connect to ${name} during reconnect attempt: ${error.message}`); // Changed to error
+    Sentry.withScope(scope => {
+      scope.setTag('mcp.server_key', name);
+      Sentry.captureException(error);
+    });
     try {
       if (transport) {
           await transport.close();
@@ -300,4 +321,6 @@ export async function reconnectSingleClient(
     }
     throw error;
   }
+  } // end Sentry.startSpan callback
+  ); // end Sentry.startSpan
 }

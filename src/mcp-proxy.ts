@@ -20,10 +20,12 @@ import {
   McpError
 } from "@modelcontextprotocol/sdk/types.js";
 import { createClients, ConnectedClient, reconnectSingleClient } from './client.js';
-import { logger } from './logger.js';
+import { logger, addBreadcrumbSink, addMcpNotificationSink } from './logger.js';
 import { Config, loadConfig, TransportConfig, isSSEConfig, isStdioConfig, isHttpConfig, ToolConfig, loadToolConfig, DEFAULT_SERVER_TOOLNAME_SEPERATOR } from './config.js';
 import { z } from 'zod';
 import * as eventsource from 'eventsource';
+import { isSentryEnabled, Sentry } from './instrumentation.js';
+import { wrapMcpServerWithSentry } from '@sentry/node';
 
 global.EventSource = eventsource.EventSource;
 
@@ -52,8 +54,23 @@ const defaultProxySettingsFull: Required<NonNullable<Config['proxy']>> = {
 
 let currentProxyConfig: Required<NonNullable<Config['proxy']>> = { ...defaultProxySettingsFull }; // Initialize with full defaults
 
+// Register Sentry structured log sink once at module init
+if (isSentryEnabled) {
+  addBreadcrumbSink((level, message) => {
+    const sentryLevel = level === 'warning' ? 'warn' : level as 'info' | 'error' | 'debug';
+    (Sentry.logger as any)[sentryLevel]?.(message);
+  });
+}
+
 // --- Function to update backend connections and maps ---
 export const updateBackendConnections = async (newServerConfig: Config, newToolConfig: ToolConfig) => {
+    return Sentry.startSpan(
+        {
+            name: 'updateBackendConnections',
+            op: 'proxy.config_reload',
+            attributes: { server_count: Object.keys(newServerConfig.mcpServers).length },
+        },
+        async () => {
     logger.log("Starting update of backend connections...");
     currentToolConfig = newToolConfig; // Update stored tool config
     currentProxyConfig = { // Update currentProxyConfig using full defaults
@@ -176,6 +193,8 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
     }
     logger.log(`  Updated prompt map with ${promptToClientMap.size} prompts.`);
     logger.log("Backend connections update finished.");
+        } // end Sentry.startSpan callback
+    ); // end Sentry.startSpan
 };
 
 async function refreshBackendConnection(serverKey: string, serverConfig: TransportConfig): Promise<boolean> {
@@ -385,9 +404,22 @@ export const createServer = async () => {
         prompts: {},
         resources: { subscribe: true },
         tools: {},
+        logging: {},
       },
     },
   );
+
+  // Auto-instrument all MCP tool/resource/prompt handlers with Sentry spans + error capture
+  wrapMcpServerWithSentry(server);
+
+  // Register MCP notification sink so connected clients receive warning/error log notifications
+  addMcpNotificationSink((level, message) => {
+    server.sendLoggingMessage({
+      level: level as 'info' | 'warning' | 'error' | 'debug',
+      logger: 'mcp-proxy',
+      data: message,
+    }).catch(() => {}); // fire-and-forget; clients may disconnect
+  });
 
   // --- Request Handlers ---
   // These handlers now rely on the maps populated by updateBackendConnections
@@ -498,6 +530,13 @@ export const createServer = async () => {
             }
          }
 
+        Sentry.addBreadcrumb({
+            category: 'tool_call.attempt',
+            message: `Attempt ${attempt + 1}/${maxRetries + 1} for "${requestedExposedName}" on "${clientForTool.name}"`,
+            level: 'info',
+            data: { attempt: attempt + 1, serverKey: clientForTool.name, transportType: clientForTool.transportType },
+        });
+
         try {
             logger.log(`Forwarding tool call for exposed name '${requestedExposedName}' (original qualified name: '${originalQualifiedName}'). Forwarding to server '${clientForTool.name}' as tool '${originalToolNameForBackend}' (Attempt ${attempt + 1})`);
             // Explicitly set a timeout for the request using SDK's RequestOptions
@@ -515,6 +554,13 @@ export const createServer = async () => {
             lastError = error;
             logger.warn(`Attempt ${attempt + 1} to call tool '${requestedExposedName}' failed: ${error.message}`);
 
+            Sentry.addBreadcrumb({
+                category: 'tool_call.attempt',
+                message: `Attempt ${attempt + 1} failed: ${error.message}`,
+                level: 'warning',
+                data: { error: error.message, code: error?.code },
+            });
+
             // Check if this error warrants a retry based on type and configuration
             const isRetryableError = isConnectionError(error) || (error?.name === 'McpError' && error?.code === -32001); // Consider timeout as retryable
             const shouldRetry = (clientForTool.transportType === 'sse' && currentProxyConfig.retrySseToolCall && isRetryableError) || // Check retrySseToolCall
@@ -525,6 +571,13 @@ export const createServer = async () => {
             if (!shouldRetry && attempt === 0) {
                  // If it's the first attempt and not a retryable error type, re-throw immediately
                  logger.error(`Tool call for '${requestedExposedName}' failed with non-retryable error on first attempt: ${error.message}`, error);
+                 Sentry.withScope(scope => {
+                     scope.setTag('mcp.server_key', clientForTool.name);
+                     scope.setTag('mcp.transport_type', clientForTool.transportType);
+                     scope.setTag('mcp.tool_name', requestedExposedName);
+                     scope.setContext('tool_call', { exposedName: requestedExposedName, originalName: originalToolNameForBackend, serverKey: clientForTool.name });
+                     Sentry.captureException(error);
+                 });
                  // If the error is already an McpError, re-throw it directly. Otherwise, wrap it.
                  if (error instanceof McpError) {
                      throw error;
@@ -536,6 +589,13 @@ export const createServer = async () => {
              if (!shouldRetry && attempt > 0) {
                  // If it's a subsequent attempt and the error is no longer retryable (e.g., backend returned a specific error after reconnect)
                  logger.error(`Tool call for '${requestedExposedName}' failed with non-retryable error after retries: ${error.message}`, error);
+                 Sentry.withScope(scope => {
+                     scope.setTag('mcp.server_key', clientForTool.name);
+                     scope.setTag('mcp.transport_type', clientForTool.transportType);
+                     scope.setTag('mcp.tool_name', requestedExposedName);
+                     scope.setContext('tool_call', { exposedName: requestedExposedName, originalName: originalToolNameForBackend, serverKey: clientForTool.name, attempt: attempt + 1, maxRetries });
+                     Sentry.captureException(error);
+                 });
                  // If the error is already an McpError, re-throw it directly. Otherwise, wrap it.
                  if (error instanceof McpError) {
                      throw error;
@@ -552,6 +612,13 @@ export const createServer = async () => {
     // If the loop finishes without returning, it means all retries failed.
     const errorMessage = `Error calling tool '${requestedExposedName}' after ${maxRetries} retries (on backend server '${clientForTool.name}', original tool name '${originalToolNameForBackend}'): ${lastError?.message || 'An unknown error occurred'}`;
     logger.error(errorMessage, lastError);
+    Sentry.withScope(scope => {
+        scope.setTag('mcp.server_key', clientForTool.name);
+        scope.setTag('mcp.transport_type', clientForTool.transportType);
+        scope.setTag('mcp.tool_name', requestedExposedName);
+        scope.setContext('tool_call', { exposedName: requestedExposedName, originalName: originalToolNameForBackend, serverKey: clientForTool.name, attempt: maxRetries + 1, maxRetries });
+        Sentry.captureException(lastError || new Error(errorMessage));
+    });
     // Ensure a structured McpError is returned to the client
     throw new McpError(lastError?.code || -32000, errorMessage, lastError?.data);
 });

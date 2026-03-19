@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Sentry } from './instrumentation.js';
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { logger } from './logger.js';
 import { createServer } from "./mcp-proxy.js";
@@ -13,11 +14,13 @@ async function main() {
   process.on("SIGINT", async () => {
     await cleanup();
     await server.close();
+    await Sentry.flush(2000);
     process.exit(0);
   });
 }
 
 main().catch((error) => {
+  Sentry.captureException(error);
   logger.error("Server error:", error.message);
-  process.exit(1);
+  Sentry.flush(2000).finally(() => process.exit(1));
 });

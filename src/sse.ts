@@ -1,3 +1,4 @@
+import { isSentryEnabled, Sentry } from './instrumentation.js';
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport, StreamableHTTPServerTransportOptions } from "@modelcontextprotocol/sdk/server/streamableHttp.js"; // Import StreamableHTTPServerTransport and options
 import express, { Request, Response, NextFunction } from "express";
@@ -260,12 +261,14 @@ if (enableAdminUI) {
     app.post('/admin/server/reload', isAuthenticated, async (req, res) => {
         logger.log(`Admin request: POST /admin/server/reload by user '${req.session.user?.username}'`);
         try {
-            // Load the latest configurations
-            const latestServerConfig = await loadConfig();
-            const latestToolConfig = await loadToolConfig();
+            await Sentry.startSpan({ name: 'admin.config_reload', op: 'admin.action' }, async () => {
+                // Load the latest configurations
+                const latestServerConfig = await loadConfig();
+                const latestToolConfig = await loadToolConfig();
 
-            // Trigger the update process in mcp-proxy
-            await updateBackendConnections(latestServerConfig, latestToolConfig);
+                // Trigger the update process in mcp-proxy
+                await updateBackendConnections(latestServerConfig, latestToolConfig);
+            });
 
             logger.log("Configuration reload completed successfully.");
             res.json({ success: true, message: 'Server configuration reloaded successfully.' });
@@ -877,6 +880,11 @@ app.post("/message", async (req, res) => {
 });
 
 
+// Register Sentry Express error handler after all routes
+if (isSentryEnabled) {
+  Sentry.setupExpressErrorHandler(app);
+}
+
 const PORT = process.env.PORT || 3663;
 
 expressServer.listen(PORT, () => {
@@ -920,12 +928,14 @@ const shutdown = async (signal: string) => {
 
 
     logger.log("Closing HTTP server...");
-    expressServer.close((err) => {
+    expressServer.close(async (err) => {
       if (err) {
         logger.error("Error closing HTTP server:", err);
+        await Sentry.flush(2000);
         process.exit(1);
       } else {
         logger.log("HTTP server closed.");
+        await Sentry.flush(2000);
         process.exit(0);
       }
     });
@@ -937,6 +947,7 @@ const shutdown = async (signal: string) => {
 
   } catch (error) {
     logger.error("Error during graceful shutdown:", error);
+    await Sentry.flush(2000);
     process.exit(1);
   }
 };

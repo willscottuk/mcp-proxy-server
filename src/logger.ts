@@ -1,3 +1,24 @@
+type BreadcrumbSink = (level: string, message: string) => void;
+type McpNotificationSink = (level: string, message: string) => void;
+
+const breadcrumbSinks: BreadcrumbSink[] = [];
+const mcpNotificationSinks: McpNotificationSink[] = [];
+
+export function addBreadcrumbSink(sink: BreadcrumbSink): void {
+  breadcrumbSinks.push(sink);
+}
+
+export function addMcpNotificationSink(sink: McpNotificationSink): void {
+  mcpNotificationSinks.push(sink);
+}
+
+function formatArgsForSink(...args: any[]): string {
+  return args.map(a => {
+    if (typeof a === 'string') return a;
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(' ');
+}
+
 function formatTimestamp(): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -38,24 +59,34 @@ function log(...args: any[]): void {
   if (currentLogLevel >= LogLevel.Info) {
     console.log(`[${formatTimestamp()}] [INFO]`, ...args);
   }
+  const msg = formatArgsForSink(...args);
+  breadcrumbSinks.forEach(s => s('info', msg));
 }
 
 function warn(...args: any[]): void {
   if (currentLogLevel >= LogLevel.Warn) {
     console.warn(`[${formatTimestamp()}] [WARN]`, ...args);
   }
+  const msg = formatArgsForSink(...args);
+  breadcrumbSinks.forEach(s => s('warning', msg));
+  mcpNotificationSinks.forEach(s => s('warning', msg));
 }
 
 function error(...args: any[]): void {
   if (currentLogLevel >= LogLevel.Error) {
     console.error(`[${formatTimestamp()}] [ERROR]`, ...args);
   }
+  const msg = formatArgsForSink(...args);
+  breadcrumbSinks.forEach(s => s('error', msg));
+  mcpNotificationSinks.forEach(s => s('error', msg));
 }
 
 function debug(...args: any[]): void {
   if (currentLogLevel >= LogLevel.Debug) {
     console.debug(`[${formatTimestamp()}] [DEBUG]`, ...args);
   }
+  const msg = formatArgsForSink(...args);
+  breadcrumbSinks.forEach(s => s('debug', msg));
 }
 
 export const logger = {
