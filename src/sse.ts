@@ -1037,6 +1037,8 @@ const shutdown = async (signal: string) => {
     logger.log("Active terminal sessions killed.");
 
 
+    Sentry.profiler.stopProfiler();
+
     logger.log("Closing HTTP server...");
     expressServer.close(async (err) => {
       if (err) {
@@ -1057,6 +1059,7 @@ const shutdown = async (signal: string) => {
 
   } catch (error) {
     logger.error("Error during graceful shutdown:", error);
+    Sentry.profiler.stopProfiler();
     await Sentry.close(2000);
     process.exit(1);
   }

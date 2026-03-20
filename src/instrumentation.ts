@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/node';
+import { nodeProfilingIntegration } from '@sentry/profiling-node';
 import { createRequire } from 'module';
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
@@ -17,6 +18,9 @@ if (isSentryEnabled && !Sentry.getClient()) {
     sendDefaultPii: true,
     includeLocalVariables: true,
     enableLogs: true,
+    integrations: [nodeProfilingIntegration()],
+    profileSessionSampleRate: Number(process.env.SENTRY_PROFILE_SESSION_SAMPLE_RATE ?? '1.0'),
+    profileLifecycle: 'trace',
   });
 }
 

@@ -57,8 +57,12 @@ let currentProxyConfig: Required<NonNullable<Config['proxy']>> = { ...defaultPro
 // Register Sentry structured log sink once at module init
 if (isSentryEnabled) {
   addBreadcrumbSink((level, message) => {
-    const sentryLevel = level === 'warning' ? 'warn' : level as 'info' | 'error' | 'debug';
-    (Sentry.logger as any)[sentryLevel]?.(message);
+    switch (level) {
+      case 'error':   Sentry.logger.error(message); break;
+      case 'warning': Sentry.logger.warn(message);  break;
+      case 'debug':   Sentry.logger.debug(message); break;
+      default:        Sentry.logger.info(message);
+    }
   });
 }
 

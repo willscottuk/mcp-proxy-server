@@ -14,6 +14,7 @@ async function main() {
   process.on("SIGINT", async () => {
     await cleanup();
     await server.close();
+    Sentry.profiler.stopProfiler();
     await Sentry.close(2000);
     process.exit(0);
   });

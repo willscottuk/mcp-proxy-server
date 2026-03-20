@@ -2,6 +2,7 @@
 // Kept minimal intentionally: no exports, no extra imports, so that OTel module
 // hooks are registered before express (or any other library) is first imported.
 import * as Sentry from '@sentry/node';
+import { nodeProfilingIntegration } from '@sentry/profiling-node';
 
 if (process.env.SENTRY_DSN) {
   Sentry.init({
@@ -12,5 +13,8 @@ if (process.env.SENTRY_DSN) {
     sendDefaultPii: true,
     includeLocalVariables: true,
     enableLogs: true,
+    integrations: [nodeProfilingIntegration()],
+    profileSessionSampleRate: Number(process.env.SENTRY_PROFILE_SESSION_SAMPLE_RATE ?? '1.0'),
+    profileLifecycle: 'trace',
   });
 }
