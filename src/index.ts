@@ -14,7 +14,7 @@ async function main() {
   process.on("SIGINT", async () => {
     await cleanup();
     await server.close();
-    await Sentry.flush(2000);
+    await Sentry.close(2000);
     process.exit(0);
   });
 }
@@ -22,5 +22,5 @@ async function main() {
 main().catch((error) => {
   Sentry.captureException(error);
   logger.error("Server error:", error.message);
-  Sentry.flush(2000).finally(() => process.exit(1));
+  Sentry.close(2000).finally(() => process.exit(1));
 });

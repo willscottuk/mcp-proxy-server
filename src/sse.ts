@@ -1041,11 +1041,11 @@ const shutdown = async (signal: string) => {
     expressServer.close(async (err) => {
       if (err) {
         logger.error("Error closing HTTP server:", err);
-        await Sentry.flush(2000);
+        await Sentry.close(2000);
         process.exit(1);
       } else {
         logger.log("HTTP server closed.");
-        await Sentry.flush(2000);
+        await Sentry.close(2000);
         process.exit(0);
       }
     });
@@ -1057,7 +1057,7 @@ const shutdown = async (signal: string) => {
 
   } catch (error) {
     logger.error("Error during graceful shutdown:", error);
-    await Sentry.flush(2000);
+    await Sentry.close(2000);
     process.exit(1);
   }
 };
