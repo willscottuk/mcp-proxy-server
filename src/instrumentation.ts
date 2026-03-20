@@ -5,7 +5,10 @@ const { version } = createRequire(import.meta.url)('../package.json') as { versi
 const dsn = process.env.SENTRY_DSN;
 export const isSentryEnabled = Boolean(dsn);
 
-if (isSentryEnabled) {
+// In SSE mode, instrument.ts is pre-loaded via --import and calls Sentry.init()
+// before express is imported. Here we only init if that hasn't happened yet
+// (e.g. stdio mode, where --import is not used).
+if (isSentryEnabled && !Sentry.getClient()) {
   Sentry.init({
     dsn,
     environment: process.env.SENTRY_ENVIRONMENT ?? 'production',

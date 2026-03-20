@@ -1,6 +1,6 @@
 {
   "name": "mcp-proxy-server",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "author": "willscottuk",
   "license": "MIT",
   "description": "An MCP proxy server that aggregates and serves multiple MCP resource servers through a single interface with stdio/sse support. Based on original work by @ptbsare",
@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "dev": "nodemon --watch 'src/**' --ext 'ts,json' --ignore 'src/**/*.spec.ts' --exec 'tsx src/index.ts'",
-    "dev:sse": "nodemon --watch 'src/**' --ext 'ts,json' --ignore 'src/**/*.spec.ts' --exec 'node --import tsx/esm --import ./src/instrumentation.ts src/sse.ts'",
+    "dev:sse": "nodemon --watch 'src/**' --ext 'ts,json' --ignore 'src/**/*.spec.ts' --exec 'node --import tsx/esm --import ./src/instrument.ts src/sse.ts'",
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
     "prepare": "npm run build",
     "watch": "tsc --watch",
