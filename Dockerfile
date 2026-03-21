@@ -67,7 +67,8 @@ RUN if echo "$BUILD_FROM" | grep -q "home-assistant"; then \
     echo "Standalone build detected (BUILD_FROM: $BUILD_FROM). Skipping addon-specific OS setup."; \
     fi
 
-RUN npm install -g pnpm bun
+RUN command -v pnpm >/dev/null 2>&1 || npm install -g pnpm; \
+    command -v bun  >/dev/null 2>&1 || npm install -g bun
 
 RUN if [ -n "$PRE_INSTALLED_PIP_PACKAGES_ARG" ]; then \
       echo "Installing pre-defined PIP packages: $PRE_INSTALLED_PIP_PACKAGES_ARG" && \
