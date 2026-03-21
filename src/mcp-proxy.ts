@@ -413,8 +413,15 @@ export const createServer = async () => {
     },
   );
 
-  // Auto-instrument all MCP tool/resource/prompt handlers with Sentry spans + error capture
-  wrapMcpServerWithSentry(server);
+  // Auto-instrument transport-level MCP monitoring via Sentry.
+  // wrapMcpServerWithSentry validates for McpServer's high-level API (tool/resource/prompt).
+  // We use the low-level Server class with setRequestHandler, so we add stubs to pass
+  // validation — the key instrumentation is the connect() wrapping that hooks the transport.
+  const serverAsAny = server as unknown as Record<string, unknown>;
+  if (!('tool' in serverAsAny)) serverAsAny['tool'] = () => { /* stub for Sentry validation */ };
+  if (!('resource' in serverAsAny)) serverAsAny['resource'] = () => { /* stub for Sentry validation */ };
+  if (!('prompt' in serverAsAny)) serverAsAny['prompt'] = () => { /* stub for Sentry validation */ };
+  wrapMcpServerWithSentry(server as unknown as Parameters<typeof wrapMcpServerWithSentry>[0]);
 
   // Register MCP notification sink so connected clients receive warning/error log notifications
   addMcpNotificationSink((level, message) => {
