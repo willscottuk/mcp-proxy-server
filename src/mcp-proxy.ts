@@ -25,6 +25,7 @@ import { Config, loadConfig, TransportConfig, isSSEConfig, isStdioConfig, isHttp
 import { z } from 'zod';
 import * as eventsource from 'eventsource';
 import { isSentryEnabled, Sentry } from './instrumentation.js';
+import { sendToolCallNotification } from './slack-webhook.js';
 import { wrapMcpServerWithSentry } from '@sentry/node';
 
 global.EventSource = eventsource.EventSource;
@@ -463,6 +464,7 @@ export const createServer = async () => {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name: requestedExposedName, arguments: args } = request.params;
+    const callStartTime = Date.now();
     let originalQualifiedName: string | undefined;
     let mapEntry: { client: ConnectedClient, toolInfo: Tool } | undefined;
 
@@ -560,6 +562,16 @@ export const createServer = async () => {
                 { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC } // Set timeout explicitly
             );
             logger.log(`[Tool Call] Backend response received for '${requestedExposedName}'. Passing to SDK Server.`);
+            sendToolCallNotification({
+                toolExposedName: requestedExposedName,
+                toolOriginalName: originalToolNameForBackend,
+                serverKey: clientForTool.name,
+                transportType: clientForTool.transportType,
+                args: args || {},
+                success: true,
+                durationMs: Date.now() - callStartTime,
+                callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
+            }).catch(() => {});
             return backendResponse; // Success! Return the response.
         } catch (error: any) {
             lastError = error;
@@ -589,6 +601,17 @@ export const createServer = async () => {
                      scope.setContext('tool_call', { exposedName: requestedExposedName, originalName: originalToolNameForBackend, serverKey: clientForTool.name });
                      Sentry.captureException(error);
                  });
+                 sendToolCallNotification({
+                     toolExposedName: requestedExposedName,
+                     toolOriginalName: originalToolNameForBackend,
+                     serverKey: clientForTool.name,
+                     transportType: clientForTool.transportType,
+                     args: args || {},
+                     success: false,
+                     errorMessage: error.message,
+                     durationMs: Date.now() - callStartTime,
+                     callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
+                 }).catch(() => {});
                  // If the error is already an McpError, re-throw it directly. Otherwise, wrap it.
                  if (error instanceof McpError) {
                      throw error;
@@ -607,6 +630,17 @@ export const createServer = async () => {
                      scope.setContext('tool_call', { exposedName: requestedExposedName, originalName: originalToolNameForBackend, serverKey: clientForTool.name, attempt: attempt + 1, maxRetries });
                      Sentry.captureException(error);
                  });
+                 sendToolCallNotification({
+                     toolExposedName: requestedExposedName,
+                     toolOriginalName: originalToolNameForBackend,
+                     serverKey: clientForTool.name,
+                     transportType: clientForTool.transportType,
+                     args: args || {},
+                     success: false,
+                     errorMessage: error.message,
+                     durationMs: Date.now() - callStartTime,
+                     callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
+                 }).catch(() => {});
                  // If the error is already an McpError, re-throw it directly. Otherwise, wrap it.
                  if (error instanceof McpError) {
                      throw error;
@@ -630,6 +664,17 @@ export const createServer = async () => {
         scope.setContext('tool_call', { exposedName: requestedExposedName, originalName: originalToolNameForBackend, serverKey: clientForTool.name, attempt: maxRetries + 1, maxRetries });
         Sentry.captureException(lastError || new Error(errorMessage));
     });
+    sendToolCallNotification({
+        toolExposedName: requestedExposedName,
+        toolOriginalName: originalToolNameForBackend,
+        serverKey: clientForTool.name,
+        transportType: clientForTool.transportType,
+        args: args || {},
+        success: false,
+        errorMessage: lastError?.message || 'An unknown error occurred',
+        durationMs: Date.now() - callStartTime,
+        callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
+    }).catch(() => {});
     // Ensure a structured McpError is returned to the client
     throw new McpError(lastError?.code || -32000, errorMessage, lastError?.data);
 });

@@ -62,6 +62,7 @@ export interface ToolSettings {
   enabled: boolean;
   exposedName?: string;
   exposedDescription?: string;
+  callType?: 'read' | 'write' | 'destructive';
 }
 
 export interface ToolConfig {
