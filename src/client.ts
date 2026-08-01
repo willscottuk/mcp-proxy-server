@@ -32,6 +32,7 @@ function validateBackendUrl(url: string, name: string): void {
 }
 export interface ConnectedClient {
   client: Client;
+  transport: Transport;
   cleanup: () => Promise<void>;
   name: string;
   config: TransportConfig; // Added config
@@ -137,11 +138,7 @@ const createClient = (name: string, transportConfig: TransportConfig): { client:
      name: 'mcp-proxy-client',
      version: '1.0.0',
    }, {
-     capabilities: {
-       prompts: {},
-       resources: { subscribe: true },
-       tools: {}
-     }
+     capabilities: {}
    });
 
    return { client, transport, transportType }
@@ -179,6 +176,7 @@ export const createClients = async (mcpServers: Record<string, TransportConfig>)
 
         clients.push({
           client,
+          transport,
           name: name,
           config: transportConfig, // Store config
           transportType: transportType, // Store transportType
@@ -314,7 +312,7 @@ export async function reconnectSingleClient(
     name: 'mcp-proxy-client-reconnect',
     version: '1.0.1',
   }, {
-    capabilities: { prompts: {}, resources: { subscribe: true }, tools: {} }
+    capabilities: {}
   });
 
   try {
@@ -323,6 +321,7 @@ export async function reconnectSingleClient(
     const finalTransport = transport; // Capture for closure
     return {
       client: newSdkClient,
+      transport: finalTransport,
       config: transportConfig, // Return config
       transportType: determinedTransportType, // Return transportType
       cleanup: async () => {

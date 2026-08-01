@@ -8,21 +8,19 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
   Tool,
-  ListToolsResultSchema,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
   ReadResourceResultSchema,
   ListResourceTemplatesRequestSchema,
   ListResourceTemplatesResultSchema,
   ResourceTemplate,
-  CompatibilityCallToolResultSchema,
   GetPromptResultSchema,
-  McpError
+  McpError,
+  ResultSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { createClients, ConnectedClient, reconnectSingleClient } from './client.js';
 import { logger, addBreadcrumbSink, addMcpNotificationSink } from './logger.js';
 import { Config, loadConfig, TransportConfig, isSSEConfig, isStdioConfig, isHttpConfig, ToolConfig, loadToolConfig, DEFAULT_SERVER_TOOLNAME_SEPERATOR } from './config.js';
-import { z } from 'zod';
 import * as eventsource from 'eventsource';
 import { isSentryEnabled, Sentry } from './instrumentation.js';
 import { sendToolCallNotification } from './slack-webhook.js';
@@ -33,12 +31,48 @@ global.EventSource = eventsource.EventSource;
 // --- Shared State ---
 // Keep track of connected clients and the maps globally within this module
 let currentConnectedClients: ConnectedClient[] = [];
-const toolToClientMap = new Map<string, { client: ConnectedClient, toolInfo: Tool }>(); // Store full tool info
+type ToolMapEntry = { client: ConnectedClient, toolInfo: Tool, mcpHeaderMappings: McpHeaderMapping[] };
+const toolToClientMap = new Map<string, ToolMapEntry>(); // Store full tool info
 const resourceToClientMap = new Map<string, ConnectedClient>();
 const promptToClientMap = new Map<string, ConnectedClient>();
+let notificationServer: Server | undefined;
+let lastToolListFingerprint = '';
 let currentToolConfig: ToolConfig = { tools: {} }; // Store loaded tool config
 let currentActiveServersConfig: Record<string, TransportConfig> = {}; // Added for retry logic
 let currentSeparator: string = DEFAULT_SERVER_TOOLNAME_SEPERATOR; // Store the current separator
+
+const TOOLS_LIST_TTL_MS = 300_000;
+const TOOLS_LIST_PAGE_SIZE = 1_000;
+const MCP_HEADER_NAME_PATTERN = /^[-!#$%&'*+.^_`|~0-9A-Za-z]+$/;
+const MAX_SAFE_JSON_INTEGER = 9007199254740991;
+const MIN_SAFE_JSON_INTEGER = -9007199254740991;
+
+type JsonObject = Record<string, unknown>;
+type McpHeaderMapping = {
+  argumentPath: string[];
+  headerName: string;
+  primitiveType: 'string' | 'integer' | 'boolean';
+};
+
+class AsyncLock {
+  private pending = Promise.resolve();
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.pending;
+    let release: () => void = () => {};
+    this.pending = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+}
+
+const httpTransportLocks = new WeakMap<object, AsyncLock>();
 
 // Define Global Default Proxy Settings
 const defaultProxySettingsFull: Required<NonNullable<Config['proxy']>> = {
@@ -65,6 +99,223 @@ if (isSentryEnabled) {
       default:        Sentry.logger.info(message);
     }
   });
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getSchemaPrimitiveType(schema: JsonObject): 'string' | 'integer' | 'boolean' | undefined {
+  const type = schema.type;
+  if (type === 'string' || type === 'integer' || type === 'boolean') {
+    return type;
+  }
+  return undefined;
+}
+
+function collectMcpHeaderMappings(
+  schema: unknown,
+  path: string[] = [],
+  seenHeaders = new Map<string, string>(),
+  errors: string[] = [],
+): { mappings: McpHeaderMapping[], errors: string[] } {
+  const mappings: McpHeaderMapping[] = [];
+  if (!isJsonObject(schema)) {
+    return { mappings, errors };
+  }
+
+  const headerName = schema['x-mcp-header'];
+  if (headerName !== undefined) {
+    const pathLabel = path.length > 0 ? path.join('.') : '<root>';
+    const primitiveType = getSchemaPrimitiveType(schema);
+    if (typeof headerName !== 'string' || headerName.length === 0) {
+      errors.push(`${pathLabel}: x-mcp-header must be a non-empty string`);
+    } else if (!MCP_HEADER_NAME_PATTERN.test(headerName)) {
+      errors.push(`${pathLabel}: x-mcp-header '${headerName}' is not a valid HTTP field-name token`);
+    } else if (!primitiveType) {
+      errors.push(`${pathLabel}: x-mcp-header can only be used on string, integer, or boolean properties`);
+    } else {
+      const normalizedHeader = headerName.toLowerCase();
+      const existingPath = seenHeaders.get(normalizedHeader);
+      if (existingPath) {
+        errors.push(`${pathLabel}: x-mcp-header '${headerName}' duplicates header from ${existingPath}`);
+      } else {
+        seenHeaders.set(normalizedHeader, pathLabel);
+        mappings.push({ argumentPath: path, headerName, primitiveType });
+      }
+    }
+  }
+
+  const properties = schema.properties;
+  if (isJsonObject(properties)) {
+    for (const [propertyName, propertySchema] of Object.entries(properties)) {
+      const nested = collectMcpHeaderMappings(propertySchema, [...path, propertyName], seenHeaders, errors);
+      mappings.push(...nested.mappings);
+    }
+  }
+
+  const allOf = schema.allOf;
+  if (Array.isArray(allOf)) {
+    for (const subSchema of allOf) {
+      const nested = collectMcpHeaderMappings(subSchema, path, seenHeaders, errors);
+      mappings.push(...nested.mappings);
+    }
+  }
+
+  return { mappings, errors };
+}
+
+function inspectToolForProxying(tool: Tool, connectedClient: ConnectedClient): { valid: boolean, mcpHeaderMappings: McpHeaderMapping[] } {
+  if (connectedClient.transportType !== 'http') {
+    return { valid: true, mcpHeaderMappings: [] };
+  }
+
+  const { mappings, errors } = collectMcpHeaderMappings(tool.inputSchema);
+  if (errors.length > 0) {
+    logger.warn(`Rejecting tool '${tool.name}' from HTTP backend '${connectedClient.name}' due to invalid x-mcp-header annotations: ${errors.join('; ')}`);
+    return { valid: false, mcpHeaderMappings: [] };
+  }
+  return { valid: true, mcpHeaderMappings: mappings };
+}
+
+function getArgumentAtPath(args: JsonObject, path: string[]): unknown {
+  let current: unknown = args;
+  for (const segment of path) {
+    if (!isJsonObject(current)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return current;
+}
+
+function extractMcpParamHeaders(mappings: McpHeaderMapping[], args: unknown, toolName: string): Record<string, string> {
+  if (mappings.length === 0 || !isJsonObject(args)) {
+    return {};
+  }
+
+  const headers: Record<string, string> = {};
+  for (const mapping of mappings) {
+    const value = getArgumentAtPath(args, mapping.argumentPath);
+    if (value === undefined || value === null) {
+      continue;
+    }
+    const pathLabel = mapping.argumentPath.join('.');
+    if (mapping.primitiveType === 'string') {
+      if (typeof value !== 'string') {
+        throw new McpError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a string for x-mcp-header '${mapping.headerName}'.`);
+      }
+      headers[`Mcp-Param-${mapping.headerName}`] = value;
+    } else if (mapping.primitiveType === 'boolean') {
+      if (typeof value !== 'boolean') {
+        throw new McpError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a boolean for x-mcp-header '${mapping.headerName}'.`);
+      }
+      headers[`Mcp-Param-${mapping.headerName}`] = String(value);
+    } else {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < MIN_SAFE_JSON_INTEGER || value > MAX_SAFE_JSON_INTEGER) {
+        throw new McpError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a safe integer for x-mcp-header '${mapping.headerName}'.`);
+      }
+      headers[`Mcp-Param-${mapping.headerName}`] = String(value);
+    }
+  }
+  return headers;
+}
+
+function getHttpTransportLock(connectedClient: ConnectedClient): AsyncLock {
+  const transportKey = connectedClient.transport as unknown as object;
+  const existing = httpTransportLocks.get(transportKey);
+  if (existing) {
+    return existing;
+  }
+  const created = new AsyncLock();
+  httpTransportLocks.set(transportKey, created);
+  return created;
+}
+
+async function withHttpRequestHeaders<T>(
+  connectedClient: ConnectedClient,
+  headersToAdd: Record<string, string>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (connectedClient.transportType !== 'http' || Object.keys(headersToAdd).length === 0) {
+    return fn();
+  }
+
+  return getHttpTransportLock(connectedClient).run(async () => {
+    const transportWithRequestInit = connectedClient.transport as unknown as { _requestInit?: RequestInit };
+    const originalRequestInit = transportWithRequestInit._requestInit;
+    const mergedHeaders = new Headers(originalRequestInit?.headers || {});
+    for (const [key, value] of Object.entries(headersToAdd)) {
+      mergedHeaders.set(key, value);
+    }
+    transportWithRequestInit._requestInit = {
+      ...originalRequestInit,
+      headers: mergedHeaders,
+    };
+    try {
+      return await fn();
+    } finally {
+      transportWithRequestInit._requestInit = originalRequestInit;
+    }
+  });
+}
+
+function buildExposedTools(): Tool[] {
+  const toolOverrides = currentToolConfig.tools || {};
+  const enabledTools: Tool[] = [];
+  for (const [originalQualifiedName, { toolInfo }] of toolToClientMap.entries()) {
+    const overrideSettings = toolOverrides[originalQualifiedName];
+    enabledTools.push({
+      ...toolInfo,
+      name: overrideSettings?.exposedName || originalQualifiedName,
+      description: overrideSettings?.exposedDescription || toolInfo.description,
+    });
+  }
+  return enabledTools.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function encodeToolCursor(offset: number): string {
+  return Buffer.from(`tools:${offset}`, 'utf8').toString('base64url');
+}
+
+function decodeToolCursor(cursor: string | undefined): number {
+  if (!cursor) {
+    return 0;
+  }
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    if (!decoded.startsWith('tools:')) {
+      throw new Error('invalid prefix');
+    }
+    const offset = Number.parseInt(decoded.slice('tools:'.length), 10);
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new Error('invalid offset');
+    }
+    return offset;
+  } catch {
+    throw new McpError(-32602, `Invalid tools/list cursor: ${cursor}`);
+  }
+}
+
+function toolListFingerprint(): string {
+  return JSON.stringify(buildExposedTools());
+}
+
+async function notifyToolListChangedIfNeeded() {
+  const nextFingerprint = toolListFingerprint();
+  if (nextFingerprint === lastToolListFingerprint) {
+    return;
+  }
+
+  const hadPreviousList = lastToolListFingerprint !== '';
+  lastToolListFingerprint = nextFingerprint;
+  if (hadPreviousList && notificationServer) {
+    try {
+      await notificationServer.sendToolListChanged();
+    } catch (error: any) {
+      logger.warn(`Failed to send tools/list_changed notification: ${error?.message || error}`);
+    }
+  }
 }
 
 // --- Function to update backend connections and maps ---
@@ -148,15 +399,19 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
     // Repopulate Tools Map
     for (const connectedClient of currentConnectedClients) {
         try {
-            const result = await connectedClient.client.request({ method: 'tools/list', params: {} }, ListToolsResultSchema);
-            if (result.tools && result.tools.length > 0) {
-                for (const tool of result.tools) {
+            const result = await connectedClient.client.request({ method: 'tools/list', params: {} }, ResultSchema) as any;
+            if (Array.isArray(result.tools) && result.tools.length > 0) {
+                for (const tool of result.tools as Tool[]) {
                     const qualifiedName = `${connectedClient.name}${currentSeparator}${tool.name}`; // Use the current separator
                     const toolSettings = currentToolConfig.tools[qualifiedName];
                     const isEnabled = !toolSettings || toolSettings.enabled !== false;
                     if (isEnabled) {
+                        const inspection = inspectToolForProxying(tool, connectedClient);
+                        if (!inspection.valid) {
+                            continue;
+                        }
                         // Store the client and the full tool info from the backend
-                        toolToClientMap.set(qualifiedName, { client: connectedClient, toolInfo: tool });
+                        toolToClientMap.set(qualifiedName, { client: connectedClient, toolInfo: tool, mcpHeaderMappings: inspection.mcpHeaderMappings });
                     }
                 }
             }
@@ -197,6 +452,7 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
          }
     }
     logger.log(`  Updated prompt map with ${promptToClientMap.size} prompts.`);
+    await notifyToolListChangedIfNeeded();
     logger.log("Backend connections update finished.");
         } // end Sentry.startSpan callback
     ); // end Sentry.startSpan
@@ -265,14 +521,18 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
     // Repopulate maps for the reconnected client
     const connectedClient = newConnectedClientEntry;
     try {
-        const result = await connectedClient.client.request({ method: 'tools/list', params: {} }, ListToolsResultSchema);
-        if (result.tools && result.tools.length > 0) {
-            for (const tool of result.tools) {
+        const result = await connectedClient.client.request({ method: 'tools/list', params: {} }, ResultSchema) as any;
+        if (Array.isArray(result.tools) && result.tools.length > 0) {
+            for (const tool of result.tools as Tool[]) {
                 const qualifiedName = `${connectedClient.name}${currentSeparator}${tool.name}`; // Use the current separator
                 const toolSettings = currentToolConfig.tools[qualifiedName];
                 const isEnabled = !toolSettings || toolSettings.enabled !== false;
                 if (isEnabled) {
-                    toolToClientMap.set(qualifiedName, { client: connectedClient, toolInfo: tool });
+                    const inspection = inspectToolForProxying(tool, connectedClient);
+                    if (!inspection.valid) {
+                        continue;
+                    }
+                    toolToClientMap.set(qualifiedName, { client: connectedClient, toolInfo: tool, mcpHeaderMappings: inspection.mcpHeaderMappings });
                 }
             }
         }
@@ -302,8 +562,9 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
           if (!(error?.name === 'McpError' && error?.code === -32601)) {
               logger.error(`Error fetching prompts from ${connectedClient.name} during refresh:`, error?.message || error);
           }
-     }
+    }
     logger.log(`Repopulated maps for ${serverKey}.`);
+    await notifyToolListChangedIfNeeded();
     return true;
 
   } catch (error: any) {
@@ -408,11 +669,12 @@ export const createServer = async () => {
       capabilities: {
         prompts: {},
         resources: { subscribe: true },
-        tools: {},
+        tools: { listChanged: true },
         logging: {},
       },
     },
   );
+  notificationServer = server;
 
   // Auto-instrument transport-level MCP monitoring via Sentry.
   // wrapMcpServerWithSentry validates for McpServer's high-level API (tool/resource/prompt).
@@ -439,34 +701,26 @@ export const createServer = async () => {
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
     logger.log("Received tools/list request - applying overrides from config");
-    const enabledTools: Tool[] = [];
-    // Access the globally stored tool config which includes overrides
-    const toolOverrides = currentToolConfig.tools || {};
-
-    for (const [originalQualifiedName, { client: connectedClient, toolInfo }] of toolToClientMap.entries()) {
-        const overrideSettings = toolOverrides[originalQualifiedName];
-
-        // Determine the final name and description to expose
-        // Use override if present, otherwise use original value
-        const exposedName = overrideSettings?.exposedName || originalQualifiedName;
-        const exposedDescription = overrideSettings?.exposedDescription || toolInfo.description;
-
-        // Construct the Tool object for the response
-        enabledTools.push({
-            name: exposedName, // Use the final exposed name
-            description: exposedDescription, // Use the final exposed description
-            inputSchema: toolInfo.inputSchema, // Schema is never overridden
-        });
-    }
-    logger.log(`Returning ${enabledTools.length} enabled tools with applied overrides.`);
-    return { tools: enabledTools };
+    const enabledTools = buildExposedTools();
+    const offset = decodeToolCursor(request.params?.cursor);
+    const pagedTools = enabledTools.slice(offset, offset + TOOLS_LIST_PAGE_SIZE);
+    const nextOffset = offset + pagedTools.length;
+    const nextCursor = nextOffset < enabledTools.length ? encodeToolCursor(nextOffset) : undefined;
+    logger.log(`Returning ${pagedTools.length}/${enabledTools.length} enabled tools with applied overrides.`);
+    return {
+      resultType: 'complete',
+      tools: pagedTools,
+      nextCursor,
+      ttlMs: TOOLS_LIST_TTL_MS,
+      cacheScope: 'public',
+    } as any;
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name: requestedExposedName, arguments: args } = request.params;
     const callStartTime = Date.now();
     let originalQualifiedName: string | undefined;
-    let mapEntry: { client: ConnectedClient, toolInfo: Tool } | undefined;
+    let mapEntry: ToolMapEntry | undefined;
 
     // Need to find the original tool based on the potentially overridden exposed name
     const toolOverrides = currentToolConfig.tools || {};
@@ -479,7 +733,7 @@ export const createServer = async () => {
 
         if (currentExposedName === requestedExposedName) {
             originalQualifiedName = key; // Found the original key
-            mapEntry = { client, toolInfo: currentToolInfo }; // Get the corresponding entry
+            mapEntry = { client, toolInfo: currentToolInfo, mcpHeaderMappings: toolToClientMap.get(key)?.mcpHeaderMappings || [] }; // Get the corresponding entry
             break;
         }
     }
@@ -493,6 +747,7 @@ export const createServer = async () => {
 
     // Now we have the correct mapEntry and the originalQualifiedName
     let { client: clientForTool, toolInfo } = mapEntry; // toolInfo here is the correct one from the found mapEntry
+    let mcpHeaderMappings = mapEntry.mcpHeaderMappings;
     const originalToolNameForBackend = toolInfo.name; // The actual name the backend server expects (from the original toolInfo)
 
     // --- Retry Logic ---
@@ -535,6 +790,7 @@ export const createServer = async () => {
                         }
                         clientForTool = newMapEntry.client;
                         toolInfo = newMapEntry.toolInfo;
+                        mcpHeaderMappings = newMapEntry.mcpHeaderMappings;
                     } else {
                         logger.error(`SSE Reconnection to server '${clientForTool.name}' failed.`);
                         throw new McpError(-32000, `SSE Reconnection to server '${clientForTool.name}' failed for tool '${requestedExposedName}'.`);
@@ -552,14 +808,24 @@ export const createServer = async () => {
 
         try {
             logger.log(`Forwarding tool call for exposed name '${requestedExposedName}' (original qualified name: '${originalQualifiedName}'). Forwarding to server '${clientForTool.name}' as tool '${originalToolNameForBackend}' (Attempt ${attempt + 1})`);
+            const backendParams = {
+                ...request.params,
+                name: originalToolNameForBackend,
+                arguments: args || {},
+            } as any;
+            const mcpParamHeaders = extractMcpParamHeaders(mcpHeaderMappings, backendParams.arguments, requestedExposedName);
             // Explicitly set a timeout for the request using SDK's RequestOptions
-            const backendResponse = await clientForTool.client.request(
-                {
-                    method: 'tools/call',
-                    params: { name: originalToolNameForBackend, arguments: args || {}, _meta: { progressToken: request.params._meta?.progressToken } }
-                },
-                CompatibilityCallToolResultSchema,
-                { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC } // Set timeout explicitly
+            const backendResponse = await withHttpRequestHeaders(
+                clientForTool,
+                mcpParamHeaders,
+                () => clientForTool.client.request(
+                    {
+                        method: 'tools/call',
+                        params: backendParams
+                    },
+                    ResultSchema,
+                    { timeout: DEFAULT_REQUEST_TIMEOUT_MSEC } // Set timeout explicitly
+                )
             );
             logger.log(`[Tool Call] Backend response received for '${requestedExposedName}'. Passing to SDK Server.`);
             sendToolCallNotification({
@@ -718,13 +984,12 @@ export const createServer = async () => {
   server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
     logger.log("Received prompts/list request - returning from cached map");
     // Directly use the pre-populated map
-    const allPrompts: z.infer<typeof ListPromptsResultSchema>['prompts'] = [];
+    const allPrompts: any[] = [];
      for (const [name, connectedClient] of promptToClientMap.entries()) {
          // Similar simplification as tools/list
          allPrompts.push({
              name: name, // The map key is the original name
              description: `[${connectedClient.name}] Prompt (details omitted in list)`,
-             inputSchema: {},
          });
         }
        logger.log(`Returning ${allPrompts.length} prompts from map.`);
@@ -736,14 +1001,13 @@ export const createServer = async () => {
 
    server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
        logger.log("Received resources/list request - returning from cached map");
-       const allResources: z.infer<typeof ListResourcesResultSchema>['resources'] = [];
+       const allResources: any[] = [];
        for (const [uri, connectedClient] of resourceToClientMap.entries()) {
            // Simplified response
            allResources.push({
                uri: uri,
                name: `[${connectedClient.name}] Resource (details omitted in list)`,
                description: undefined,
-               methods: [], // Cannot know methods without asking client
            });
        }
        logger.log(`Returning ${allResources.length} resources from map.`);
