@@ -592,17 +592,20 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
 // --- Function to get current proxy state ---
 export const getCurrentProxyState = () => {
     // Return copies or relevant info to avoid direct mutation
-    const tools = Array.from(toolToClientMap.entries()).map(([qualifiedName, { client: connectedClient, toolInfo }]) => {
-        // Return structure expected by the frontend (tools.js)
+    const tools = Array.from(toolToClientMap.entries()).map(([qualifiedName, { client: connectedClient, toolInfo, mcpHeaderMappings }]) => {
         return {
-            // Frontend expects original tool name here
+            qualifiedName,
             name: toolInfo.name,
-            // Frontend expects snake_case server name here
             serverName: connectedClient?.name || 'Unknown',
-            // Frontend expects original description here
-            description: toolInfo.description
-            // qualifiedName is not directly used by the frontend display logic,
-            // but could be added if needed: qualified_name: qualifiedName
+            transportType: connectedClient?.transportType || 'unknown',
+            description: toolInfo.description,
+            inputSchema: toolInfo.inputSchema,
+            outputSchema: toolInfo.outputSchema,
+            annotations: toolInfo.annotations,
+            execution: (toolInfo as any).execution,
+            icons: (toolInfo as any).icons,
+            _meta: toolInfo._meta,
+            mcpHeaderMappings,
         };
     });
     // Could add resources and prompts here if needed by admin UI later

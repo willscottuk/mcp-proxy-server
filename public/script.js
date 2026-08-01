@@ -100,6 +100,18 @@ function appendToInstallOutput(serverKey, text, isError = false) {
     }
 }
 
+function showParseConfigModal() {
+    if (!parseConfigModal) return;
+    parseConfigModal.style.display = 'flex';
+    parseConfigModal.classList.add('modal-open');
+}
+
+function hideParseConfigModal() {
+    if (!parseConfigModal) return;
+    parseConfigModal.classList.remove('modal-open');
+    parseConfigModal.style.display = 'none';
+}
+
 function handleInstallUpdate(event) { 
     try {
         const data = JSON.parse(event.data);
@@ -166,6 +178,7 @@ const showSection = (sectionId) => {
     });
     document.querySelectorAll('#main-nav .nav-button').forEach(button => {
         button.classList.remove('active');
+        button.classList.remove('tab-active');
     });
     const targetSection = document.getElementById(sectionId);
     if (targetSection) {
@@ -174,6 +187,7 @@ const showSection = (sectionId) => {
         const activeButton = document.getElementById(`nav-${sectionPrefix}`);
         if (activeButton) {
             activeButton.classList.add('active');
+            activeButton.classList.add('tab-active');
         }
     } else {
         console.warn(`Section with ID "${sectionId}" not found.`);
@@ -324,7 +338,7 @@ function handleParseConfigExecute() {
             if (typeof window.addInstallButtonListeners === 'function') window.addInstallButtonListeners();
             window.isServerConfigDirty = true; 
             jsonConfigInput.value = ''; 
-            parseConfigModal.style.display = 'none'; 
+            hideParseConfigModal();
             alert(`${serversAddedCount} server(s) parsed and added to the UI. Remember to save the configuration.`);
         } else if (Object.keys(serversToAdd).length > 0) {
              parseConfigError.textContent = "No valid server entries found in the provided JSON.";
@@ -425,16 +439,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (parseServerConfigButton) parseServerConfigButton.addEventListener('click', () => {
-        if(parseConfigModal) parseConfigModal.style.display = 'block';
+        showParseConfigModal();
         if(parseConfigError) parseConfigError.textContent = '';
     });
     if (closeParseModalButton) closeParseModalButton.addEventListener('click', () => {
-        if(parseConfigModal) parseConfigModal.style.display = 'none';
+        hideParseConfigModal();
         if(parseConfigError) parseConfigError.textContent = '';
         if(jsonConfigInput) jsonConfigInput.value = '';
     });
     if (cancelParseConfigButton) cancelParseConfigButton.addEventListener('click', () => {
-        if(parseConfigModal) parseConfigModal.style.display = 'none';
+        hideParseConfigModal();
         if(parseConfigError) parseConfigError.textContent = '';
         if(jsonConfigInput) jsonConfigInput.value = '';
     });

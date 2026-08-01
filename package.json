@@ -15,7 +15,8 @@
   "scripts": {
     "dev": "nodemon --watch 'src/**' --ext 'ts,json' --ignore 'src/**/*.spec.ts' --exec 'tsx src/index.ts'",
     "dev:sse": "nodemon --watch 'src/**' --ext 'ts,json' --ignore 'src/**/*.spec.ts' --exec 'node --import tsx/esm --import ./src/instrument.ts src/sse.ts'",
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "build:css": "tailwindcss -i ./src/admin.css -o ./public/style.css",
+    "build": "npm run build:css && tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
     "prepare": "npm run build",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
@@ -35,9 +36,12 @@
     "zod-to-json-schema": "^3.23.5"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
     "@types/express": "^4.17.0",
     "@types/node": "^20.11.24",
+    "daisyui": "^5.7.9",
     "nodemon": "^3.1.9",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.2",
     "typescript": "^5.3.3"
   }

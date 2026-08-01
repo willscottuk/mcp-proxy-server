@@ -3,79 +3,91 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MCP Server Config Editor</title>
+    <title>MCP Proxy Admin</title>
     <link rel="stylesheet" href="style.css">
-<link rel="icon" type="image/png" href="logo.png">
+    <link rel="icon" type="image/png" href="logo.png">
 </head>
-<body>
-    <header>
-        <div class="header-top-row">
-            <h1>MCP Proxy Admin</h1>
-            <button id="logout-button" style="display: none;">Logout</button> 
+<body class="admin-shell text-base-content">
+    <header class="navbar sticky top-0 z-40 border-b border-base-300 bg-base-100/95 px-4 shadow-sm backdrop-blur">
+        <div class="header-top-row navbar-start min-w-0">
+            <h1 class="truncate text-lg font-semibold">MCP Proxy Admin</h1>
         </div>
-        <nav id="main-nav" style="display: none;">
-             <button id="nav-servers" class="nav-button active">Servers</button>
-             <button id="nav-tools" class="nav-button">Tools</button>
-             <button id="nav-terminal" class="nav-button">Terminal</button>
+        <nav id="main-nav" class="navbar-center tabs tabs-border hidden" style="display: none;">
+             <button id="nav-servers" class="nav-button tab active tab-active">Servers</button>
+             <button id="nav-tools" class="nav-button tab">Tools</button>
+             <button id="nav-terminal" class="nav-button tab">Terminal</button>
         </nav>
+        <div class="navbar-end">
+            <button id="logout-button" class="btn btn-error btn-sm" style="display: none;">Logout</button>
+        </div>
     </header>
 
-    <main id="main-content">
-        <div id="login-section">
-            <h2>Login</h2>
-        <form id="login-form">
-            <div>
-                <label for="username">Username:</label>
-                <input type="text" id="username" name="username" required>
+    <main id="main-content" class="mx-auto w-full max-w-7xl px-4 py-6 lg:px-8">
+        <div id="login-section" class="mx-auto max-w-md">
+            <div class="card border border-base-300 bg-base-100 shadow-sm">
+                <form id="login-form" class="card-body gap-4">
+                    <h2 class="card-title">Login</h2>
+                    <div>
+                        <label class="label" for="username"><span class="label-text">Username</span></label>
+                        <input class="input input-bordered w-full" type="text" id="username" name="username" autocomplete="username" required>
+                    </div>
+                    <div>
+                        <label class="label" for="password"><span class="label-text">Password</span></label>
+                        <input class="input input-bordered w-full" type="password" id="password" name="password" autocomplete="current-password" required>
+                    </div>
+                    <button class="btn btn-primary" type="submit">Login</button>
+                    <p id="login-error" class="error-message alert alert-error"></p>
+                </form>
             </div>
-            <div>
-                <label for="password">Password:</label>
-                <input type="password" id="password" name="password" required>
-            </div>
-            <button type="submit">Login</button>
-            <p id="login-error" class="error-message"></p>
-        </form>
         </div>
 
         <!-- Server Configuration Section -->
-        <div id="servers-section" class="admin-section" style="display: none;">
-            <h2>Server Configuration</h2>
-            <p>Edit the MCP server connections. Changes require a server restart to take effect.</p>
-            <div id="server-list">
+        <section id="servers-section" class="admin-section space-y-5" style="display: none;">
+            <div class="flex flex-col gap-3 border-b border-base-300 pb-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                    <h2 class="text-2xl font-semibold">Server Configuration</h2>
+                    <p class="mt-1 text-sm text-base-content/70">Edit MCP server connections. Saved changes reload the proxy configuration.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <button id="add-stdio-server-button" class="add-button btn btn-success btn-sm">Add Stdio</button>
+                    <button id="add-sse-server-button" class="add-button btn btn-success btn-sm">Add SSE</button>
+                    <button id="add-http-server-button" class="add-button btn btn-success btn-sm">Add HTTP</button>
+                    <button id="parse-server-config-button" class="add-button btn btn-outline btn-sm">Parse JSON</button>
+                </div>
+            </div>
+            <div id="server-list" class="space-y-4">
                 <!-- Server entries will be loaded here -->
             </div>
-            <button id="add-stdio-server-button" class="add-button">Add Stdio Server</button>
-            <button id="add-sse-server-button" class="add-button">Add SSE Server</button>
-            <button id="add-http-server-button" class="add-button">Add HTTP Server</button>
-            <button id="parse-server-config-button" class="add-button">Parse Config from JSON</button>
-            <hr>
-            <button id="save-config-button">Save & Reload Server Configuration</button>
-            <p id="save-status" class="status-message"></p>
-        </div>
+            <div class="flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
+                <button id="save-config-button" class="btn btn-primary">Save & Reload Server Configuration</button>
+                <p id="save-status" class="status-message alert alert-info flex-1"></p>
+            </div>
+        </section>
 
         <!-- Tool Configuration Section -->
-        <div id="tools-section" class="admin-section" style="display: none;">
-             <h2>Tool Configuration</h2>
-             <p>Enable or disable specific tools provided by the connected servers. Changes require reloading the configuration to take effect.</p>
-             <div id="tool-list">
+        <section id="tools-section" class="admin-section space-y-5" style="display: none;">
+             <div class="border-b border-base-300 pb-4">
+                <h2 class="text-2xl font-semibold">Tool Configuration</h2>
+                <p class="mt-1 text-sm text-base-content/70">Control exposed tools, override model-facing names and descriptions, and inspect MCP metadata passed through by the proxy.</p>
+             </div>
+             <div id="tool-list" class="space-y-4">
                  <!-- Tool entries will be loaded here -->
-                 <p>Loading tools...</p>
+                 <p class="loading loading-spinner loading-md"></p>
              </div>
-             <hr>
-             <div class="tool-actions-footer"> <!-- New wrapper div -->
-                <button id="save-tool-config-button">Save & Reload Tool Configuration</button> <!-- Save button first for left alignment -->
-                <button id="reset-all-tool-overrides-button" class="cleanup-button" title="Clear all tool-specific configurations (overrides and enabled/disabled states)">Reset All Tool Overrides</button>
+             <div class="tool-actions-footer border-t border-base-300 pt-4">
+                <button id="save-tool-config-button" class="btn btn-primary">Save & Reload Tool Configuration</button>
+                <button id="reset-all-tool-overrides-button" class="cleanup-button btn btn-warning" title="Clear all tool-specific configurations (overrides and enabled/disabled states)">Reset All Tool Overrides</button>
              </div>
-             <p id="save-tool-status" class="status-message"></p>
-        </div>
+             <p id="save-tool-status" class="status-message alert alert-info"></p>
+        </section>
 
         <!-- Modal for Parsing Server Config -->
         <div id="parse-config-modal" class="modal" style="display: none;">
-            <div class="modal-content">
-                <span class="close-button" id="close-parse-modal">&times;</span>
-                <h2>Parse Server Configuration from JSON</h2>
-                <p>Paste your JSON configuration below. It should be an object with an `mcpServers` key, an object of server configurations, or a single server configuration object.</p>
-                <textarea id="json-config-input" rows="15" placeholder='{
+            <div class="modal-box max-w-3xl">
+                <button class="close-button btn btn-circle btn-ghost btn-sm absolute right-3 top-3" id="close-parse-modal" aria-label="Close">&times;</button>
+                <h2 class="text-xl font-semibold">Parse Server Configuration from JSON</h2>
+                <p class="mt-2 text-sm text-base-content/70">Paste an object with an mcpServers key, an object of server configurations, or a single server configuration object.</p>
+                <textarea class="textarea textarea-bordered mt-4 min-h-80 w-full font-mono text-sm" id="json-config-input" rows="15" placeholder='{
   "mcpServers": {
     "my-new-server": {
       "name": "My Parsed Server",
@@ -107,16 +119,16 @@ OR
   "active": true
 }'></textarea>
                 <div class="modal-actions">
-                    <button id="execute-parse-config-button">Parse and Add</button>
-                    <button id="cancel-parse-config-button" type="button">Cancel</button>
+                    <button id="execute-parse-config-button" class="btn btn-primary">Parse and Add</button>
+                    <button id="cancel-parse-config-button" class="btn btn-ghost" type="button">Cancel</button>
                 </div>
-                <p id="parse-config-error" class="error-message"></p>
+                <p id="parse-config-error" class="error-message alert alert-error mt-4"></p>
             </div>
         </div>
 
     </main>
 
-    <footer>
+    <footer class="footer footer-center border-t border-base-300 bg-base-200 p-6 text-sm text-base-content/70">
         <p>Having issues or suggestions? <a href="https://github.com/ptbsare/mcp-proxy-server/issues" target="_blank" rel="noopener noreferrer">Submit an issue on GitHub</a>.</p>
         <p>Find This Helpful? <a href="https://ptbsare.org/about/" target="_blank" rel="noopener noreferrer">Buy me a Coffee ☕</a></p>
         <p>MCP Proxy Server by <a href="https://github.com/ptbsare" target="_blank" rel="noopener noreferrer">ptbsare</a></p>

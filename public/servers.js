@@ -43,7 +43,7 @@ function renderServerConfig(config) {
 function renderServerEntry(key, serverConf, startExpanded = false) {
     if (!serverListDiv) return; 
     const entryDiv = document.createElement('div');
-    entryDiv.classList.add('server-entry');
+    entryDiv.className = 'server-entry card border border-base-300 bg-base-100 shadow-sm';
     if (!startExpanded) {
         entryDiv.classList.add('collapsed');
     }
@@ -66,31 +66,42 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
     entryDiv.dataset.serverType = type; // Store the actual type
 
     const headerDiv = document.createElement('div');
-    headerDiv.classList.add('server-header');
+    headerDiv.className = 'server-header card-body flex flex-col gap-3 lg:flex-row lg:items-center';
     // Move Active checkbox to the header, at the beginning
     headerDiv.innerHTML = `
-        <label class="inline-label server-active-label" title="Activate/Deactivate Server">
-            <input type="checkbox" class="server-active-input" ${serverConf.active !== false ? 'checked' : ''}>
+        <label class="inline-label server-active-label flex items-center gap-2" title="Activate/Deactivate Server">
+            <input type="checkbox" class="server-active-input toggle toggle-primary" ${serverConf.active !== false ? 'checked' : ''}>
+            <span class="text-sm">Active</span>
         </label>
-        <h3>${serverConf.name || key} (<span class="server-type">${displayType}</span>)</h3>
-        <button class="delete-button">Delete</button>
+        <div class="min-w-0 flex-1">
+            <h3 class="break-words text-lg font-semibold">${serverConf.name || key}</h3>
+            <div class="mt-1 flex flex-wrap gap-2">
+                <span class="server-type badge badge-outline">${displayType}</span>
+                <span class="badge badge-ghost break-all">${key}</span>
+            </div>
+        </div>
+        <button class="delete-button btn btn-warning btn-sm">Delete</button>
     `;
     entryDiv.appendChild(headerDiv);
 
     const detailsDiv = document.createElement('div');
-    detailsDiv.classList.add('server-details');
+    detailsDiv.className = 'server-details px-8 pb-6';
 
     // Remove Active checkbox from detailsHtml
     let detailsHtml = `
-        <div><label>Server Key (Unique ID):</label><input type="text" class="server-key-input" value="${key}" required></div>
-        <div><label>Display Name:</label><input type="text" class="server-name-input" value="${serverConf.name || ''}"></div>
+        <div class="grid gap-4 lg:grid-cols-2">
+            <div><label class="label"><span class="label-text">Server Key (Unique ID)</span></label><input type="text" class="server-key-input input input-bordered w-full" value="${key}" required></div>
+            <div><label class="label"><span class="label-text">Display Name</span></label><input type="text" class="server-name-input input input-bordered w-full" value="${serverConf.name || ''}"></div>
+        </div>
     `;
 
     if (type === 'sse' || type === 'http') {
         detailsHtml += `
-            <div><label>URL:</label><input type="url" class="server-url-input" value="${serverConf.url || ''}" required></div>
-            <div><label>API Key (X-Api-Key Header):</label><input type="text" class="server-apikey-input" value="${serverConf.apiKey || ''}"></div>
-            <div><label>Bearer Token (Authorization Header):</label><input type="text" class="server-bearertoken-input" value="${serverConf.bearerToken || ''}"></div>
+            <div class="mt-4 grid gap-4 lg:grid-cols-2">
+                <div class="lg:col-span-2"><label class="label"><span class="label-text">URL</span></label><input type="url" class="server-url-input input input-bordered w-full" value="${serverConf.url || ''}" required></div>
+                <div><label class="label"><span class="label-text">API Key (X-Api-Key Header)</span></label><input type="text" class="server-apikey-input input input-bordered w-full" value="${serverConf.apiKey || ''}"></div>
+                <div><label class="label"><span class="label-text">Bearer Token (Authorization Header)</span></label><input type="text" class="server-bearertoken-input input input-bordered w-full" value="${serverConf.bearerToken || ''}"></div>
+            </div>
         `;
         // Add any type-specific fields for 'http' if they differ from 'sse' in the future
     } else if (type === 'stdio') {
@@ -99,21 +110,25 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
         const installDirValue = serverConf.installDirectory !== undefined ? serverConf.installDirectory : defaultInstallDir;
         
         detailsHtml += `
-            <div><label>Command:</label><input type="text" class="server-command-input" value="${serverConf.command || ''}" required></div>
-            <div><label>Arguments (comma-separated):</label><input type="text" class="server-args-input" value="${(serverConf.args || []).join(', ')}"></div>
-            <div>
-                <label>Environment Variables:</label>
-                <div class="env-vars-container"></div>
-                <button type="button" class="add-env-var-button">+ Add Variable</button>
+            <div class="mt-4 grid gap-4 lg:grid-cols-2">
+                <div><label class="label"><span class="label-text">Command</span></label><input type="text" class="server-command-input input input-bordered w-full" value="${serverConf.command || ''}" required></div>
+                <div><label class="label"><span class="label-text">Arguments (comma-separated)</span></label><input type="text" class="server-args-input input input-bordered w-full" value="${(serverConf.args || []).join(', ')}"></div>
             </div>
-            <hr style="margin: 10px 0;">
-            <div><label>Install Directory (optional):</label><input type="text" class="server-install-dir-input" value="${installDirValue}"></div>
-            <div><label>Install Commands (optional, one per line):</label><textarea class="server-install-cmds-input">${(serverConf.installCommands || []).join('\n')}</textarea></div>
-            <button class="install-button" data-server-key="${key}" ${!installDirValue.trim() ? 'disabled title="Install directory must be set to enable install button"' : ''}>Check/Run Install</button>
-            <div class="install-output" id="install-output-${key}" style="display: none; white-space: pre-wrap; background-color: #222; color: #eee; padding: 10px; margin-top: 10px; max-height: 300px; overflow-y: auto; font-family: monospace;"></div>
+            <div class="mt-4 rounded-box border border-base-300 bg-base-200/40 p-4">
+                <label class="label px-0 pt-0"><span class="label-text">Environment Variables</span></label>
+                <div class="env-vars-container"></div>
+                <button type="button" class="add-env-var-button btn btn-outline btn-sm">Add Variable</button>
+            </div>
+            <div class="divider"></div>
+            <div class="grid gap-4 lg:grid-cols-2">
+                <div><label class="label"><span class="label-text">Install Directory (optional)</span></label><input type="text" class="server-install-dir-input input input-bordered w-full" value="${installDirValue}"></div>
+                <div><label class="label"><span class="label-text">Install Commands (optional, one per line)</span></label><textarea class="server-install-cmds-input textarea textarea-bordered min-h-28 w-full">${(serverConf.installCommands || []).join('\n')}</textarea></div>
+            </div>
+            <button class="install-button btn btn-info btn-sm mt-3" data-server-key="${key}" ${!installDirValue.trim() ? 'disabled title="Install directory must be set to enable install button"' : ''}>Check/Run Install</button>
+            <div class="install-output rounded-box bg-neutral p-3 text-sm text-neutral-content" id="install-output-${key}" style="display: none;"></div>
         `;
     } else {
-         detailsHtml += `<p class="error-message">Warning: Unknown server type configuration ('${type}').</p>`;
+         detailsHtml += `<div class="error-message alert alert-error">Warning: Unknown server type configuration ('${type}').</div>`;
     }
 
     detailsDiv.innerHTML = detailsHtml;
@@ -218,10 +233,10 @@ function addEnvVarRow(container, key = '', value = '') {
     const rowDiv = document.createElement('div');
     rowDiv.classList.add('env-var-row');
     rowDiv.innerHTML = `
-        <input type="text" class="env-key-input" placeholder="Key" value="${key}">
+        <input type="text" class="env-key-input input input-bordered input-sm" placeholder="Key" value="${key}">
         <span>=</span>
-        <input type="text" class="env-value-input" placeholder="Value" value="${value}">
-        <button type="button" class="delete-env-var-button">X</button>
+        <input type="text" class="env-value-input input input-bordered input-sm" placeholder="Value" value="${value}">
+        <button type="button" class="delete-env-var-button btn btn-error btn-sm">X</button>
     `;
     rowDiv.querySelector('.delete-env-var-button').addEventListener('click', () => {
         rowDiv.remove();
