@@ -22,8 +22,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@sentry/node": "^9.47.1",
-    "@sentry/profiling-node": "^9.47.1",
+    "@sentry/node": "^10.69.0",
+    "@sentry/profiling-node": "^10.69.0",
     "@types/express-session": "^1.18.1",
     "eventsource": "^4.0.0",
     "express": "^4.21.1",
