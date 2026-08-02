@@ -13,6 +13,7 @@ import { exec as execCallback, spawn } from 'child_process'; // Import spawn
 import { promisify } from 'util';
 // Import the necessary functions from mcp-proxy and config
 import { createServer, updateBackendConnections, getCurrentProxyState } from "./mcp-proxy.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import http from 'http';
 import { fileURLToPath } from 'url';
 // Import JSONRPCMessage and JSONRPCError from types
@@ -87,11 +88,12 @@ const TOOL_CONFIG_PATH = path.resolve(__dirname, '..', 'config', 'tool_config.js
 const SECRET_FILE_PATH = path.resolve(__dirname, '..', 'config', '.session_secret');
 const publicPath = path.join(__dirname, '..', 'public');
 
-const sseTransports = new Map<string, SSEServerTransport>();
-const streamableHttpTransports = new Map<string, StreamableHTTPServerTransport>();
+type McpSession<TTransport> = { transport: TTransport; server: Server };
+const sseTransports = new Map<string, McpSession<SSEServerTransport>>();
+const streamableHttpTransports = new Map<string, McpSession<StreamableHTTPServerTransport>>();
 
 // createServer no longer returns connectedClients
-const { server, cleanup } = await createServer();
+const { cleanup } = await createServer();
 
 // No longer creating a single mainHttpTransport at startup for /mcp.
 // Transports for /mcp will be created dynamically per session.
@@ -766,13 +768,14 @@ app.get("/sse", async (req, res) => {
     // it implies an attempt to reconnect or a stale client. Clean up the old one.
     if (sessionIdFromClientQuery && sseTransports.has(sessionIdFromClientQuery)) {
       logger.log(`[${clientId}] Client provided existing session ID: ${sessionIdFromClientQuery}. Closing and removing old transport.`);
-      const existingTransport = sseTransports.get(sessionIdFromClientQuery)!;
+      const existingSession = sseTransports.get(sessionIdFromClientQuery)!;
       sseTransports.delete(sessionIdFromClientQuery); // Remove old one from map
-      if (typeof existingTransport.close === 'function') {
-        existingTransport.close().catch(err =>
+      if (typeof existingSession.transport.close === 'function') {
+        existingSession.transport.close().catch(err =>
           logger.warn(`[${clientId}] Non-critical error closing existing transport for session ${sessionIdFromClientQuery}:`, err)
         );
       }
+      await existingSession.server.close();
       logger.log(`[${clientId}] Old transport for session ${sessionIdFromClientQuery} removed. Active sessions: ${sseTransports.size}`);
     } else if (sessionIdFromClientQuery) {
       logger.log(`[${clientId}] Client provided session ID ${sessionIdFromClientQuery}, but no active session found for it. A new session will be created.`);
@@ -789,7 +792,8 @@ app.get("/sse", async (req, res) => {
       throw new Error("Failed to obtain session ID from new SSE transport instance.");
     }
     
-    sseTransports.set(actualTransportSessionId, clientTransport); // Store the new transport with its own generated ID
+    const { server: sessionServer } = await createServer(false);
+    sseTransports.set(actualTransportSessionId, { transport: clientTransport, server: sessionServer });
     logger.log(`[${clientId}] New SSE transport created. Actual Session ID for this connection: ${actualTransportSessionId}. Client initially provided: ${sessionIdFromClientQuery || 'none'}. Active sessions: ${sseTransports.size}`);
     
     const currentTransport = clientTransport; // To use in closures for onclose/onerror
@@ -799,6 +803,7 @@ app.get("/sse", async (req, res) => {
       logger.error(`[${clientId}] SSE transport error for session ${currentSessionId}: ${err?.stack || err?.message || err}`);
       if (sseTransports.has(currentSessionId)) {
         sseTransports.delete(currentSessionId);
+        void sessionServer.close();
         logger.log(`[${clientId}] Transport for session ${currentSessionId} removed due to error. Active sessions: ${sseTransports.size}`);
       }
     };
@@ -807,12 +812,13 @@ app.get("/sse", async (req, res) => {
       logger.log(`[${clientId}] SSE client disconnected for session ${currentSessionId}.`);
       if (sseTransports.has(currentSessionId)) {
         sseTransports.delete(currentSessionId);
+        void sessionServer.close();
         logger.log(`[${clientId}] Transport for session ${currentSessionId} removed on close. Active sessions: ${sseTransports.size}`);
       }
     };
 
     logger.log(`[${clientId}] Attempting server.connect for new transport with session ${currentSessionId}...`);
-    await server.connect(currentTransport);
+    await sessionServer.connect(currentTransport);
     logger.log(`[${clientId}] SSE client connected successfully via server.connect for session ${currentSessionId}.`);
 
   } catch (error: any) {
@@ -821,7 +827,9 @@ app.get("/sse", async (req, res) => {
     
     // If a transport was created and added to the map, ensure it's cleaned up on error.
     if (actualTransportSessionId && sseTransports.has(actualTransportSessionId)) {
-       sseTransports.delete(actualTransportSessionId);
+      const failedSession = sseTransports.get(actualTransportSessionId);
+      sseTransports.delete(actualTransportSessionId);
+      if (failedSession) await failedSession.server.close();
        logger.log(`[${clientId}] Transport for session ${actualTransportSessionId} removed due to setup/connection error. Active sessions: ${sseTransports.size}`);
     }
     // Ensure clientTransport (if partially created) is closed on error.
@@ -877,14 +885,17 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
       sessionIdGenerator: undefined,
       enableJsonResponse: false,
     });
+    const { server: statelessServer } = await createServer(false);
     try {
-      await server.connect(statelessTransport);
+      await statelessServer.connect(statelessTransport);
       await statelessTransport.handleRequest(req, res, req.body);
     } catch (error: any) {
       logger.error(`[${clientId}] /mcp (stateless): Error handling request:`, error);
       if (!res.headersSent) {
         res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: `Internal error: ${error.message}` }, id: (req.body as any)?.id ?? null });
       }
+    } finally {
+      await statelessServer.close();
     }
     return;
   }
@@ -894,7 +905,7 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
   let transportSessionIdToUse: string | undefined = clientProvidedSessionId;
 
   if (clientProvidedSessionId) {
-    httpTransport = streamableHttpTransports.get(clientProvidedSessionId);
+    httpTransport = streamableHttpTransports.get(clientProvidedSessionId)?.transport;
     if (!httpTransport) {
       logger.warn(`[${clientId}] /mcp: Client provided Mcp-Session-Id '${clientProvidedSessionId}', but no active transport found. Responding 404.`);
       if (!res.headersSent) {
@@ -913,6 +924,7 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
     logger.log(`[${clientId}] /mcp: No Mcp-Session-Id from client, or new session. Creating new StreamableHTTPServerTransport.`);
     const tempGeneratedIdForEarlyMap = `pending-${crypto.randomBytes(8).toString('hex')}`;
     let capturedHttpTransportInstance: StreamableHTTPServerTransport | null = null; // To ensure closure captures the correct instance
+    const { server: sessionServer } = await createServer(false);
 
     const newTransportOptions: StreamableHTTPServerTransportOptions = {
         sessionIdGenerator: () => crypto.randomUUID(), // Use crypto.randomUUID for session ID generation
@@ -928,24 +940,24 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
                 const finalSessionId = sdkGeneratedSessionId; // Use the ID from the callback
 
                 if (streamableHttpTransports.has(tempGeneratedIdForEarlyMap)) {
-                    const transportInstanceFromMap = streamableHttpTransports.get(tempGeneratedIdForEarlyMap);
-                    if (transportInstanceFromMap === capturedHttpTransportInstance) {
+                    const sessionFromMap = streamableHttpTransports.get(tempGeneratedIdForEarlyMap);
+                    if (sessionFromMap?.transport === capturedHttpTransportInstance) {
                         streamableHttpTransports.delete(tempGeneratedIdForEarlyMap);
-                        streamableHttpTransports.set(finalSessionId, capturedHttpTransportInstance);
+                        streamableHttpTransports.set(finalSessionId, sessionFromMap);
                         if (transportSessionIdToUse === tempGeneratedIdForEarlyMap) {
                             transportSessionIdToUse = finalSessionId;
                         }
                         logger.log(`[${clientId}] /mcp: Transport map updated. Temp ID '${tempGeneratedIdForEarlyMap}' replaced with final '${finalSessionId}'. Active: ${streamableHttpTransports.size}`);
                     } else {
                         logger.error(`[${clientId}] /mcp: Mismatch during onsessioninitialized! Temp ID ${tempGeneratedIdForEarlyMap} found but instance differs.`);
-                        if (!streamableHttpTransports.has(finalSessionId) || streamableHttpTransports.get(finalSessionId) !== capturedHttpTransportInstance) {
-                           streamableHttpTransports.set(finalSessionId, capturedHttpTransportInstance);
+                        if (!streamableHttpTransports.has(finalSessionId) || streamableHttpTransports.get(finalSessionId)?.transport !== capturedHttpTransportInstance) {
+                           streamableHttpTransports.set(finalSessionId, { transport: capturedHttpTransportInstance, server: sessionServer });
                            logger.warn(`[${clientId}] /mcp: Force-mapped transport with final ID '${finalSessionId}' due to instance mismatch.`);
                         }
                     }
                 } else {
-                    if (!streamableHttpTransports.has(finalSessionId) || streamableHttpTransports.get(finalSessionId) !== capturedHttpTransportInstance) {
-                        streamableHttpTransports.set(finalSessionId, capturedHttpTransportInstance);
+                    if (!streamableHttpTransports.has(finalSessionId) || streamableHttpTransports.get(finalSessionId)?.transport !== capturedHttpTransportInstance) {
+                        streamableHttpTransports.set(finalSessionId, { transport: capturedHttpTransportInstance, server: sessionServer });
                         if (transportSessionIdToUse === tempGeneratedIdForEarlyMap) {
                            transportSessionIdToUse = finalSessionId;
                         }
@@ -963,7 +975,7 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
     
     // Store with a temporary ID. This will be updated by onsessioninitialized when the SDK provides the actual session ID.
     transportSessionIdToUse = tempGeneratedIdForEarlyMap;
-    streamableHttpTransports.set(tempGeneratedIdForEarlyMap, httpTransport);
+    streamableHttpTransports.set(tempGeneratedIdForEarlyMap, { transport: httpTransport, server: sessionServer });
     logger.log(`[${clientId}] /mcp: New transport created. Stored with temp ID: ${tempGeneratedIdForEarlyMap}. Active transports: ${streamableHttpTransports.size}`);
 
     const currentTransportForHandlers = httpTransport; // Use this specific instance in handlers
@@ -973,33 +985,36 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
       const idToClean = currentTransportForHandlers.sessionId || transportSessionIdToUse;
       logger.error(`[${clientId}] /mcp: StreamableHTTPServerTransport error for session related to ${idToClean}:`, error);
       
-      if (streamableHttpTransports.get(tempGeneratedIdForEarlyMap) === currentTransportForHandlers) {
+      if (streamableHttpTransports.get(tempGeneratedIdForEarlyMap)?.transport === currentTransportForHandlers) {
         streamableHttpTransports.delete(tempGeneratedIdForEarlyMap);
       }
-      if (currentTransportForHandlers.sessionId && streamableHttpTransports.get(currentTransportForHandlers.sessionId) === currentTransportForHandlers) {
+      if (currentTransportForHandlers.sessionId && streamableHttpTransports.get(currentTransportForHandlers.sessionId)?.transport === currentTransportForHandlers) {
         streamableHttpTransports.delete(currentTransportForHandlers.sessionId);
       }
+      void sessionServer.close();
       logger.log(`[${clientId}] /mcp: Transport for session related to ${idToClean} removed due to error. Active: ${streamableHttpTransports.size}`);
     };
 
     currentTransportForHandlers.onclose = () => {
       const idToClean = currentTransportForHandlers.sessionId || transportSessionIdToUse;
       logger.log(`[${clientId}] /mcp: StreamableHTTPServerTransport closed for session related to ${idToClean}.`);
-      if (streamableHttpTransports.get(tempGeneratedIdForEarlyMap) === currentTransportForHandlers) {
+      if (streamableHttpTransports.get(tempGeneratedIdForEarlyMap)?.transport === currentTransportForHandlers) {
         streamableHttpTransports.delete(tempGeneratedIdForEarlyMap);
       }
-      if (currentTransportForHandlers.sessionId && streamableHttpTransports.get(currentTransportForHandlers.sessionId) === currentTransportForHandlers) {
+      if (currentTransportForHandlers.sessionId && streamableHttpTransports.get(currentTransportForHandlers.sessionId)?.transport === currentTransportForHandlers) {
         streamableHttpTransports.delete(currentTransportForHandlers.sessionId);
       }
+      void sessionServer.close();
       logger.log(`[${clientId}] /mcp: Transport for session related to ${idToClean} removed on close. Active: ${streamableHttpTransports.size}`);
     };
 
     try {
-      await server.connect(currentTransportForHandlers);
+      await sessionServer.connect(currentTransportForHandlers);
       logger.log(`[${clientId}] /mcp: New transport (temp ID: ${transportSessionIdToUse}, awaiting final SDK sessionId) connected to server.`);
     } catch (connectError: any) {
       logger.error(`[${clientId}] /mcp: Failed to connect new transport to server:`, connectError);
       streamableHttpTransports.delete(tempGeneratedIdForEarlyMap); // Clean up temp entry
+      await sessionServer.close();
       if (!res.headersSent) {
         res.status(500).json({
             jsonrpc: "2.0",
@@ -1058,7 +1073,8 @@ app.post("/message", async (req, res) => {
     return res.status(400).send({ error: "Missing sessionId query parameter" });
   }
 
-  const transport = sseTransports.get(sessionId);
+  const session = sseTransports.get(sessionId);
+  const transport = session?.transport;
 
   if (!transport) {
     logger.error(`POST /message error: No active transport found for Session ID: ${sessionId}`);
@@ -1103,9 +1119,15 @@ expressServer.listen(PORT, () => {
 const shutdown = async (signal: string) => {
   logger.log(`\nReceived ${signal}. Shutting down gracefully...`);
   try {
-    logger.log("Closing MCP Server (disconnecting transports)...");
-    await server.close();
-    logger.log("MCP Server closed.");
+    logger.log("Closing MCP client sessions...");
+    const sessions = new Set([...sseTransports.values(), ...streamableHttpTransports.values()]);
+    await Promise.all([...sessions].map(async ({ transport, server }) => {
+      await transport.close();
+      await server.close();
+    }));
+    sseTransports.clear();
+    streamableHttpTransports.clear();
+    logger.log("MCP client sessions closed.");
 
     logger.log("Cleaning up backend clients...");
     await cleanup();

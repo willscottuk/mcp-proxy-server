@@ -633,10 +633,11 @@ const isConnectionError = (err: any): boolean => {
 };
 
 // --- Server Creation ---
-export const createServer = async () => {
-  // Load initial config
-  const initialServerConfig = await loadConfig(); // This now includes proxy settings
-  const initialToolConfig = await loadToolConfig();
+export const createServer = async (initializeProxy = true) => {
+  if (initializeProxy) {
+    // Load initial config
+    const initialServerConfig = await loadConfig(); // This now includes proxy settings
+    const initialToolConfig = await loadToolConfig();
 
   // Initialize currentActiveServersConfig AND currentProxyConfig from the initial load
   const initialActiveServers: Record<string, TransportConfig> = {};
@@ -649,16 +650,17 @@ export const createServer = async () => {
             }
         }
     }
-  currentActiveServersConfig = initialActiveServers;
-  // Update currentProxyConfig using initialServerConfig and global defaults
-  currentProxyConfig = {
-      ...defaultProxySettingsFull,
-      ...(initialServerConfig.proxy || {}),
-  };
+    currentActiveServersConfig = initialActiveServers;
+    // Update currentProxyConfig using initialServerConfig and global defaults
+    currentProxyConfig = {
+        ...defaultProxySettingsFull,
+        ...(initialServerConfig.proxy || {}),
+    };
 
 
-  // Perform initial connection and map population
-  await updateBackendConnections(initialServerConfig, initialToolConfig);
+    // Perform initial connection and map population
+    await updateBackendConnections(initialServerConfig, initialToolConfig);
+  }
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms)); // Define sleep
 
