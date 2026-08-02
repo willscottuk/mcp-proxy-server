@@ -204,7 +204,7 @@ function annotationsForToolType(annotations: Tool['annotations'], toolType: Tool
  */
 function toolDisplayTitle(serverKey: string, toolInfo: Tool): string {
   const serverDisplayName = currentActiveServersConfig[serverKey]?.name || serverKey;
-  const upstreamTitle = toolInfo.annotations?.title?.trim();
+  const upstreamTitle = toolInfo.title?.trim() || toolInfo.annotations?.title?.trim();
   const fallbackTitle = toolInfo.name
     .replace(/[_-]+/g, ' ')
     .replace(/([a-z])([A-Z])/g, '$1 $2');
@@ -310,6 +310,7 @@ function buildExposedTools(): Tool[] {
     enabledTools.push({
       ...toolInfo,
       name: overrideSettings?.exposedName || originalQualifiedName,
+      title: toolDisplayTitle(client.name, toolInfo),
       description: overrideSettings?.exposedDescription || toolInfo.description,
       annotations: annotationsWithDisplayTitle(typeAnnotations, client.name, toolInfo),
     });

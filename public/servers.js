@@ -91,10 +91,13 @@ async function renderServerDetail(serverKey) {
     const header = document.getElementById('server-detail-header');
     const overview = document.getElementById('server-detail-overview');
     const tools = document.getElementById('server-detail-tools');
-    if (!config || !header || !overview || !tools) return false;
+    const configuration = document.getElementById('server-detail-configuration');
+    if (!config || !header || !overview || !tools || !configuration) return false;
     const health = server?.health || { state: config.active === false ? 'inactive' : 'checking' };
     header.innerHTML = `<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div class="flex flex-wrap items-center gap-2"><h2 class="text-2xl font-semibold">${escapeServerHtml(config.name || serverKey)}</h2><span class="badge ${health.state === 'connected' ? 'badge-success' : health.state === 'error' ? 'badge-error' : 'badge-ghost'}">${escapeServerHtml(health.state)}</span><span class="badge badge-outline">${escapeServerHtml(config.type)}</span></div><p class="mt-1 font-mono text-sm text-base-content/60">${escapeServerHtml(serverKey)}</p></div><button id="refresh-server-button" class="btn btn-outline btn-sm">Refresh health</button></div>`;
     overview.innerHTML = `<div class="grid gap-4 md:grid-cols-3"><div class="stat rounded-box border border-base-300"><div class="stat-title">Exposed tools</div><div class="stat-value text-primary">${server?.toolCounts?.exposed || 0}</div></div><div class="stat rounded-box border border-base-300"><div class="stat-title">Discovered tools</div><div class="stat-value">${server?.toolCounts?.discovered || 0}</div></div><div class="stat rounded-box border border-base-300"><div class="stat-title">Last checked</div><div class="stat-desc">${health.checkedAt ? escapeServerHtml(new Date(health.checkedAt).toLocaleString()) : 'Not checked yet'}</div></div></div>${health.error ? `<div class="alert alert-error mt-4">${escapeServerHtml(health.error)}</div>` : ''}`;
+    configuration.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="text-lg font-semibold">Effective server configuration</h3><p class="mt-1 text-sm text-base-content/70">Read-only. Edit this server from the All servers page.</p></div><div class="flex gap-2"><button id="copy-server-config-button" class="btn btn-outline btn-sm">Copy configuration</button><a class="btn btn-primary btn-sm" href="/admin/">Edit configuration</a></div></div><pre class="json-panel rounded-box border border-base-300 bg-base-200/40 p-4 text-sm">${escapeServerHtml(JSON.stringify(config, null, 2))}</pre>`;
+    configuration.querySelector('#copy-server-config-button')?.addEventListener('click', () => copyServerValue(JSON.stringify(config, null, 2), 'Server configuration'));
     const discoveredTools = (window.discoveredTools || []).filter(tool => tool.serverName === serverKey);
     const configuredTools = window.currentToolConfig?.tools || {};
     const configuredOnlyKeys = Object.keys(configuredTools).filter(toolKey =>
@@ -107,23 +110,19 @@ async function renderServerDetail(serverKey) {
         controls.className = 'flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-4 lg:flex-row lg:items-center';
         controls.innerHTML = `<label class="input input-bordered flex flex-1 items-center gap-2"><span class="sr-only">Search tools</span><input class="server-tool-search grow" type="search" placeholder="Search tools"></label><select class="server-tool-filter select select-bordered"><option value="">All tools</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="read">Read</option><option value="write">Write</option><option value="destructive">Destructive</option></select><button class="server-tools-enable btn btn-outline btn-sm">Enable all</button><button class="server-tools-disable btn btn-outline btn-warning btn-sm">Disable all</button><select class="server-tools-type select select-bordered select-sm"><option value="read">Mark all read</option><option value="write">Mark all write</option><option value="destructive">Mark all destructive</option></select><button class="server-tools-apply-type btn btn-outline btn-sm">Apply type</button>`;
         tools.appendChild(controls);
-        const intro = document.createElement('div');
-        intro.className = 'alert alert-info';
-        intro.innerHTML = 'This is the complete tool metadata view. Tool exposure and overrides can be changed in <button class="link font-semibold">Tool Configuration</button>.';
-        intro.querySelector('button')?.addEventListener('click', () => document.getElementById('nav-tools')?.click());
-        tools.appendChild(intro);
         const list = document.createElement('div');
         list.className = 'mt-4 space-y-4';
+        list.dataset.serverKey = serverKey;
         tools.appendChild(list);
         discoveredTools
             .slice()
             .sort((a, b) => (a.qualifiedName || a.name).localeCompare(b.qualifiedName || b.name))
             .forEach(tool => {
                 const toolKey = tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`;
-                window.renderToolEntry?.(toolKey, tool, configuredTools[toolKey] || {}, false, true, list, true);
+                window.renderToolEntry?.(toolKey, tool, configuredTools[toolKey] || {}, false, true, list, false);
             });
         configuredOnlyKeys.forEach(toolKey => {
-            window.renderToolEntry?.(toolKey, null, configuredTools[toolKey], true, config.active !== false, list, true);
+            window.renderToolEntry?.(toolKey, null, configuredTools[toolKey], true, config.active !== false, list, false);
         });
         const filterTools = () => {
             const query = controls.querySelector('.server-tool-search').value.trim().toLowerCase();
@@ -138,27 +137,35 @@ async function renderServerDetail(serverKey) {
         controls.querySelector('.server-tool-search').addEventListener('input', filterTools);
         controls.querySelector('.server-tool-filter').addEventListener('change', filterTools);
         const setAllTools = (enabled) => {
-            if (!confirm(`${enabled ? 'Enable' : 'Disable'} every discovered tool for ${config.name || serverKey}? You will be taken to Tool Configuration to review and save these changes.`)) return;
-            discoveredTools.forEach(tool => {
-                const key = tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`;
-                window.currentToolConfig.tools[key] = { ...(window.currentToolConfig.tools[key] || {}), enabled };
-            });
-            window.renderTools?.();
-            document.getElementById('nav-tools')?.click();
-            window.showAdminNotice?.(`All ${discoveredTools.length} tools are marked ${enabled ? 'enabled' : 'disabled'}. Save the Tool Configuration to apply.`, 'info');
+            if (!confirm(`${enabled ? 'Enable' : 'Disable'} every discovered tool for ${config.name || serverKey}?`)) return;
+            list.querySelectorAll('.tool-enabled-input:not(:disabled)').forEach(input => { input.checked = enabled; });
+            window.showAdminNotice?.(`All ${discoveredTools.length} tools are marked ${enabled ? 'enabled' : 'disabled'}. Save changes to apply.`, 'info');
         };
         controls.querySelector('.server-tools-enable').addEventListener('click', () => setAllTools(true));
         controls.querySelector('.server-tools-disable').addEventListener('click', () => setAllTools(false));
         controls.querySelector('.server-tools-apply-type').addEventListener('click', () => {
             const toolType = controls.querySelector('.server-tools-type').value;
-            if (!confirm(`Mark every discovered tool for ${config.name || serverKey} as ${toolType}? You will be taken to Tool Configuration to review and save this change.`)) return;
-            discoveredTools.forEach(tool => {
-                const key = tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`;
-                window.currentToolConfig.tools[key] = { ...(window.currentToolConfig.tools[key] || {}), toolType };
-            });
-            window.renderTools?.();
-            document.getElementById('nav-tools')?.click();
-            window.showAdminNotice?.(`All ${discoveredTools.length} tools are marked ${toolType}. Save the Tool Configuration to apply.`, 'info');
+            if (!confirm(`Mark every discovered tool for ${config.name || serverKey} as ${toolType}?`)) return;
+            list.querySelectorAll('.tool-calltype-input:not(:disabled)').forEach(input => { input.value = toolType; });
+            window.showAdminNotice?.(`All ${discoveredTools.length} tools are marked ${toolType}. Save changes to apply.`, 'info');
+        });
+        const saveBar = document.createElement('div');
+        saveBar.className = 'tool-actions-footer border-t border-base-300 pt-4';
+        saveBar.innerHTML = '<button class="save-server-tools-button btn btn-primary">Save & Reload Tool Configuration</button><p class="server-tool-save-status text-sm text-base-content/60"></p>';
+        tools.appendChild(saveBar);
+        saveBar.querySelector('.save-server-tools-button').addEventListener('click', () => {
+            const status = saveBar.querySelector('.server-tool-save-status');
+            status.textContent = 'Saving the complete tool configuration…';
+            window.addEventListener('tool-config-save-complete', async event => {
+                if (event.detail.success) {
+                    status.textContent = 'Tool configuration saved and reloaded.';
+                    await window.loadToolData?.();
+                    await renderServerDetail(serverKey);
+                } else {
+                    status.textContent = `Save failed: ${event.detail.error || 'validation error'}`;
+                }
+            }, { once: true });
+            window.saveServerToolEntries?.(list.querySelectorAll('.tool-entry'));
         });
     } else {
         tools.innerHTML = '<div class="alert">No tools are currently associated with this server.</div>';
@@ -494,12 +501,12 @@ function initializeServerSaveListener() {
     localSaveConfigButton.addEventListener('click', async () => {
         localSaveStatus.textContent = 'Saving server configuration...';
         localSaveStatus.style.color = 'orange';
-        // Server detail pages render one entry at a time. Start with the full
-        // loaded configuration so saving one edit cannot discard every other
-        // server.
+        // The Servers page renders every configured server. Rebuild this
+        // collection from the cards that remain in the UI so a removed card is
+        // actually deleted, while retaining any top-level proxy settings.
         const newConfig = {
             ...(window.currentServerConfig || {}),
-            mcpServers: { ...(window.currentServerConfig?.mcpServers || {}) }
+            mcpServers: {}
         };
         const entries = localServerListDiv.querySelectorAll('.server-entry');
         let isValid = true;
@@ -593,9 +600,6 @@ function initializeServerSaveListener() {
             }
 
             if (isValid) {
-                 if (originalKey && originalKey !== newKey) {
-                     delete newConfig.mcpServers[originalKey];
-                 }
                  newConfig.mcpServers[newKey] = serverData;
                  const header = entryDiv.querySelector('.server-header');
                  if(header) header.style.border = '';

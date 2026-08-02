@@ -3,6 +3,45 @@ const toolListDiv = document.getElementById('tool-list');
 const saveToolConfigButton = document.getElementById('save-tool-config-button');
 let serverToolnameSeparator = '__';
 
+function applyToolFilters() {
+    const search = document.getElementById('tool-search-input')?.value.trim().toLowerCase() || '';
+    const server = document.getElementById('tool-server-filter')?.value || '';
+    const status = document.getElementById('tool-status-filter')?.value || '';
+    const type = document.getElementById('tool-type-filter')?.value || '';
+    const entries = [...(toolListDiv?.querySelectorAll('.tool-entry') || [])];
+    let shown = 0;
+    entries.forEach(entry => {
+        const matches = (!search || entry.dataset.search.includes(search)) &&
+            (!server || entry.dataset.server === server) &&
+            (!status || entry.dataset.status === status) &&
+            (!type || entry.dataset.type === type);
+        entry.hidden = !matches;
+        if (matches) shown += 1;
+    });
+    const summary = document.getElementById('tool-filter-summary');
+    if (summary) summary.textContent = entries.length ? `${shown} of ${entries.length} tools shown` : '';
+    let empty = toolListDiv?.querySelector('.tool-filter-empty');
+    if (entries.length && shown === 0 && !empty) {
+        empty = document.createElement('div');
+        empty.className = 'tool-filter-empty alert';
+        empty.textContent = 'No tools match these filters.';
+        toolListDiv?.appendChild(empty);
+    } else if (shown > 0 && empty) {
+        empty.remove();
+    }
+}
+
+function populateToolServerFilter() {
+    const filter = document.getElementById('tool-server-filter');
+    if (!filter) return;
+    const selected = filter.value;
+    const servers = [...new Set([...(window.discoveredTools || []).map(tool => tool.serverName), ...Object.keys(window.currentToolConfig?.tools || {}).map(key => key.split(serverToolnameSeparator)[0])])]
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+    filter.innerHTML = '<option value="">All servers</option>' + servers.map(server => `<option value="${escapeHtml(server)}">${escapeHtml(window.currentServerConfig?.mcpServers?.[server]?.name || server)}</option>`).join('');
+    filter.value = servers.includes(selected) ? selected : '';
+}
+
 function escapeHtml(value) {
     return String(value ?? '')
         .replace(/&/g, '&amp;')
@@ -164,6 +203,9 @@ function renderTools() {
         renderToolEntry(toolKey, null, config, true, isServerActiveForConfigOnlyTool);
     });
 
+    populateToolServerFilter();
+    applyToolFilters();
+
     if (toolListDiv.innerHTML === '') {
         toolListDiv.innerHTML = '<div class="alert">No tools discovered or configured.</div>';
     }
@@ -177,8 +219,6 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
     if (!isServerActive) {
         entryDiv.title = 'This tool belongs to an inactive server. Enabling it will have no effect.';
     }
-    entryDiv.dataset.toolKey = toolKey;
-
     const exposedName = toolConfig.exposedName || toolKey;
     const displayName = toolDefinition?.displayName || toolDefinition?.effectiveAnnotations?.title || exposedName;
     const exposedNameOverride = toolConfig.exposedName || '';
@@ -194,6 +234,13 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
     const hasOutputSchema = !!toolDefinition?.outputSchema;
     const mappingCount = Array.isArray(toolDefinition?.mcpHeaderMappings) ? toolDefinition.mcpHeaderMappings.length : 0;
     const taskSupport = toolDefinition?.execution?.taskSupport;
+    const proxyState = toolDefinition?.proxyState || (isConfigOnly ? 'missing' : isEnabled ? 'enabled' : 'disabled');
+
+    entryDiv.dataset.toolKey = toolKey;
+    entryDiv.dataset.server = serverName;
+    entryDiv.dataset.status = proxyState === 'exposed' ? 'enabled' : proxyState;
+    entryDiv.dataset.type = effectiveToolType;
+    entryDiv.dataset.search = `${displayName} ${toolKey} ${serverName} ${originalDescription}`.toLowerCase();
 
     entryDiv.innerHTML = `
         <div class="card-body gap-4">
@@ -220,6 +267,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
             </div>
             <div class="tool-details mt-2 space-y-5">
                 ${isConfigOnly ? '<div class="alert alert-warning">This tool was configured but not discovered by any active server.</div>' : ''}
+                <div class="rounded-box border border-base-300 bg-base-200/40 p-4">
                 <div class="grid gap-4 lg:grid-cols-3">
                     <div class="lg:col-span-2">
                         <label class="label"><span class="label-text">Exposed Tool Name Override</span></label>
@@ -240,6 +288,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
                     <label class="label"><span class="label-text">Exposed Description Override</span></label>
                     <textarea class="tool-exposeddescription-input textarea textarea-bordered min-h-28 w-full" placeholder="Default: original backend description">${escapeHtml(exposedDescriptionOverride)}</textarea>
                 </div>
+                </div>
                 <div class="rounded-box border border-base-300 bg-base-200/40 p-4">
                     <div class="grid gap-4 lg:grid-cols-2">
                         <div>
@@ -256,7 +305,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
                         <p class="mt-1 whitespace-pre-wrap text-sm">${escapeHtml(originalDescription)}</p>
                     </div>
                 </div>
-                <div class="rounded-box border border-primary/30 bg-primary/5 p-4">
+                <div class="rounded-box border border-base-300 bg-base-200/40 p-4">
                     <div class="text-xs font-semibold uppercase tracking-wide text-base-content/60">MCP client receives</div>
                     <p class="mt-1 text-sm"><strong>Effective type:</strong> ${escapeHtml(effectiveToolType)} (${escapeHtml(toolTypeSource)})</p>
                     ${renderJsonPanel('Effective annotations', toolDefinition?.effectiveAnnotations)}
@@ -287,7 +336,11 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
             if (confirm(`Are you sure you want to reset all overrides for tool "${toolKey}"?\nThis will remove any custom settings for its name, description, enabled state, and call type from the configuration. You will need to save the tool configuration to make this permanent.`)) {
                 if (window.currentToolConfig && window.currentToolConfig.tools && window.currentToolConfig.tools[toolKey]) {
                     delete window.currentToolConfig.tools[toolKey];
-                    renderTools();
+                    if (target.dataset.serverKey && typeof window.renderServerDetail === 'function') {
+                        window.renderServerDetail(target.dataset.serverKey);
+                    } else {
+                        renderTools();
+                    }
                     const localSaveToolStatus = document.getElementById('save-tool-status');
                     if (localSaveToolStatus) {
                         localSaveToolStatus.textContent = `Overrides for '${toolKey}' reset. Click "Save & Reload" to apply.`;
@@ -383,6 +436,7 @@ function initializeToolSaveListener() {
         });
 
         if (!isValid) {
+            window.dispatchEvent(new CustomEvent('tool-config-save-complete', { detail: { success: false, error: errorMsg } }));
             saveToolStatus.textContent = `Error: ${errorMsg}`;
             saveToolStatus.style.color = 'red';
             setTimeout(() => { if(saveToolStatus) saveToolStatus.textContent = ''; saveToolStatus.style.color = 'green'; }, 7000);
@@ -404,6 +458,7 @@ function initializeToolSaveListener() {
 
                 if (typeof window.triggerReload === 'function') {
                     await window.triggerReload(saveToolStatus);
+                    window.dispatchEvent(new CustomEvent('tool-config-save-complete', { detail: { success: true } }));
                 } else {
                     console.error("triggerReload function not found.");
                     saveToolStatus.textContent += ' Reload trigger function not found!';
@@ -412,11 +467,13 @@ function initializeToolSaveListener() {
                 }
 
             } else {
+                window.dispatchEvent(new CustomEvent('tool-config-save-complete', { detail: { success: false, error: result.error || response.statusText } }));
                 saveToolStatus.textContent = `Error saving tool configuration: ${result.error || response.statusText}`;
                 saveToolStatus.style.color = 'red';
                 setTimeout(() => { if(saveToolStatus) saveToolStatus.textContent = ''; saveToolStatus.style.color = 'green'; }, 5000);
             }
         } catch (error) {
+            window.dispatchEvent(new CustomEvent('tool-config-save-complete', { detail: { success: false, error: error.message } }));
             console.error("Error saving tool config:", error);
             saveToolStatus.textContent = `Network error saving tool configuration: ${error.message}`;
             saveToolStatus.style.color = 'red';
@@ -425,10 +482,37 @@ function initializeToolSaveListener() {
     });
 }
 
+function saveServerToolEntries(entries) {
+    if (!window.currentToolConfig?.tools || !saveToolConfigButton) return false;
+    entries.forEach(entry => {
+        const toolKey = entry.dataset.toolKey;
+        const enabled = entry.querySelector('.tool-enabled-input')?.checked;
+        const exposedName = entry.querySelector('.tool-exposedname-input')?.value.trim();
+        const exposedDescription = entry.querySelector('.tool-exposeddescription-input')?.value.trim();
+        const toolType = entry.querySelector('.tool-calltype-input')?.value;
+        if (enabled === false || exposedName || exposedDescription || toolType) {
+            window.currentToolConfig.tools[toolKey] = { enabled, exposedName: exposedName || undefined, exposedDescription: exposedDescription || undefined, toolType: toolType || undefined };
+        } else {
+            delete window.currentToolConfig.tools[toolKey];
+        }
+    });
+    // Re-render the complete catalogue before saving. This deliberately saves
+    // every tool, preventing a server-scoped edit from dropping other servers.
+    renderTools();
+    saveToolConfigButton.click();
+    return true;
+}
+
 window.loadToolData = loadToolData;
 window.renderTools = renderTools;
 window.renderToolEntry = renderToolEntry;
+window.saveServerToolEntries = saveServerToolEntries;
 window.initializeToolSaveListener = initializeToolSaveListener;
+
+['tool-search-input', 'tool-server-filter', 'tool-status-filter', 'tool-type-filter'].forEach(id => {
+    const control = document.getElementById(id);
+    control?.addEventListener(id === 'tool-search-input' ? 'input' : 'change', applyToolFilters);
+});
 
 console.log("tools.js loaded");
 
