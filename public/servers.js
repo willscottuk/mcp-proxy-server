@@ -386,7 +386,13 @@ function initializeServerSaveListener() {
     localSaveConfigButton.addEventListener('click', async () => {
         localSaveStatus.textContent = 'Saving server configuration...';
         localSaveStatus.style.color = 'orange';
-        const newConfig = { mcpServers: {} };
+        // Server detail pages render one entry at a time. Start with the full
+        // loaded configuration so saving one edit cannot discard every other
+        // server.
+        const newConfig = {
+            ...(window.currentServerConfig || {}),
+            mcpServers: { ...(window.currentServerConfig?.mcpServers || {}) }
+        };
         const entries = localServerListDiv.querySelectorAll('.server-entry');
         let isValid = true;
         let errorMsg = '';
@@ -396,12 +402,13 @@ function initializeServerSaveListener() {
 
             const newKeyInput = entryDiv.querySelector('.server-key-input');
             const newKey = newKeyInput.value.trim();
+            const originalKey = entryDiv.dataset.serverKey;
 
             if (!newKey) {
                 isValid = false; errorMsg = 'Server Key cannot be empty.'; newKeyInput.style.border = '1px solid red'; return;
             } else { newKeyInput.style.border = ''; }
 
-            if (newConfig.mcpServers.hasOwnProperty(newKey)) {
+            if (newConfig.mcpServers.hasOwnProperty(newKey) && newKey !== originalKey) {
                  isValid = false; errorMsg = `Duplicate Server Key: "${newKey}".`; newKeyInput.style.border = '1px solid red'; return;
             }
 
@@ -478,6 +485,9 @@ function initializeServerSaveListener() {
             }
 
             if (isValid) {
+                 if (originalKey && originalKey !== newKey) {
+                     delete newConfig.mcpServers[originalKey];
+                 }
                  newConfig.mcpServers[newKey] = serverData;
                  const header = entryDiv.querySelector('.server-header');
                  if(header) header.style.border = '';
