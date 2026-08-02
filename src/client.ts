@@ -1,8 +1,5 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport, SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { Client, SSEClientTransport, SSEClientTransportOptions, StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions, Transport } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { TransportConfig, isSSEConfig, isStdioConfig, isHttpConfig } from './config.js';
 import { EventSource } from 'eventsource';
 import { logger } from './logger.js'; // Import logger functions
@@ -134,12 +131,10 @@ const createClient = (name: string, transportConfig: TransportConfig): { client:
      return { transport: undefined, client: undefined, transportType: undefined };
    }
 
-   const client = new Client({
+  const client = new Client({
      name: 'mcp-proxy-client',
      version: '1.0.0',
-   }, {
-     capabilities: {}
-   });
+  });
 
    return { client, transport, transportType }
 }
@@ -311,8 +306,6 @@ export async function reconnectSingleClient(
   const newSdkClient = new Client({
     name: 'mcp-proxy-client-reconnect',
     version: '1.0.1',
-  }, {
-    capabilities: {}
   });
 
   try {

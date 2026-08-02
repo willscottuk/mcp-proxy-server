@@ -1,23 +1,12 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js"; // Import the constant
+import { DEFAULT_REQUEST_TIMEOUT_MSEC, ProtocolError, Server, Tool } from "@modelcontextprotocol/server";
 import {
-  CallToolRequestSchema,
-  GetPromptRequestSchema,
-  ListPromptsRequestSchema,
-  ListResourcesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-  Tool,
   ListPromptsResultSchema,
   ListResourcesResultSchema,
   ReadResourceResultSchema,
-  ListResourceTemplatesRequestSchema,
   ListResourceTemplatesResultSchema,
-  ResourceTemplate,
   GetPromptResultSchema,
-  McpError,
   ResultSchema
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/core";
 import { createClients, ConnectedClient, reconnectSingleClient } from './client.js';
 import { logger, addBreadcrumbSink, addMcpNotificationSink } from './logger.js';
 import { Config, loadConfig, TransportConfig, isSSEConfig, isStdioConfig, isHttpConfig, ToolConfig, loadToolConfig, DEFAULT_SERVER_TOOLNAME_SEPERATOR } from './config.js';
@@ -203,17 +192,17 @@ function extractMcpParamHeaders(mappings: McpHeaderMapping[], args: unknown, too
     const pathLabel = mapping.argumentPath.join('.');
     if (mapping.primitiveType === 'string') {
       if (typeof value !== 'string') {
-        throw new McpError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a string for x-mcp-header '${mapping.headerName}'.`);
+        throw new ProtocolError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a string for x-mcp-header '${mapping.headerName}'.`);
       }
       headers[`Mcp-Param-${mapping.headerName}`] = value;
     } else if (mapping.primitiveType === 'boolean') {
       if (typeof value !== 'boolean') {
-        throw new McpError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a boolean for x-mcp-header '${mapping.headerName}'.`);
+        throw new ProtocolError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a boolean for x-mcp-header '${mapping.headerName}'.`);
       }
       headers[`Mcp-Param-${mapping.headerName}`] = String(value);
     } else {
       if (typeof value !== 'number' || !Number.isInteger(value) || value < MIN_SAFE_JSON_INTEGER || value > MAX_SAFE_JSON_INTEGER) {
-        throw new McpError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a safe integer for x-mcp-header '${mapping.headerName}'.`);
+        throw new ProtocolError(-32602, `Tool '${toolName}' argument '${pathLabel}' must be a safe integer for x-mcp-header '${mapping.headerName}'.`);
       }
       headers[`Mcp-Param-${mapping.headerName}`] = String(value);
     }
@@ -293,7 +282,7 @@ function decodeToolCursor(cursor: string | undefined): number {
     }
     return offset;
   } catch {
-    throw new McpError(-32602, `Invalid tools/list cursor: ${cursor}`);
+    throw new ProtocolError(-32602, `Invalid tools/list cursor: ${cursor}`);
   }
 }
 
@@ -416,7 +405,7 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
                 }
             }
         } catch (error: any) {
-             if (!(error?.name === 'McpError' && error?.code === -32601)) { // Ignore 'Method not found'
+             if (!(error?.code === -32601)) { // Ignore 'Method not found'
                  logger.error(`Error fetching tools from ${connectedClient.name} during map update:`, error?.message || error);
              }
         }
@@ -431,7 +420,7 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
                  result.resources.forEach(resource => resourceToClientMap.set(resource.uri, connectedClient));
              }
          } catch (error: any) {
-              if (!(error?.name === 'McpError' && error?.code === -32601)) { // Ignore 'Method not found'
+              if (!(error?.code === -32601)) { // Ignore 'Method not found'
                   logger.error(`Error fetching resources from ${connectedClient.name} during map update:`, error?.message || error);
               }
          }
@@ -446,7 +435,7 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
                  result.prompts.forEach(prompt => promptToClientMap.set(prompt.name, connectedClient));
              }
          } catch (error: any) {
-              if (!(error?.name === 'McpError' && error?.code === -32601)) { // Ignore 'Method not found'
+              if (!(error?.code === -32601)) { // Ignore 'Method not found'
                   logger.error(`Error fetching prompts from ${connectedClient.name} during map update:`, error?.message || error);
               }
          }
@@ -537,7 +526,7 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
             }
         }
     } catch (error: any) {
-         if (!(error?.name === 'McpError' && error?.code === -32601)) {
+         if (!(error?.code === -32601)) {
              logger.error(`Error fetching tools from ${connectedClient.name} during refresh:`, error?.message || error);
          }
     }
@@ -548,7 +537,7 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
              result.resources.forEach(resource => resourceToClientMap.set(resource.uri, connectedClient));
          }
      } catch (error: any) {
-          if (!(error?.name === 'McpError' && error?.code === -32601)) {
+          if (!(error?.code === -32601)) {
               logger.error(`Error fetching resources from ${connectedClient.name} during refresh:`, error?.message || error);
           }
      }
@@ -559,7 +548,7 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
              result.prompts.forEach(prompt => promptToClientMap.set(prompt.name, connectedClient));
          }
      } catch (error: any) {
-          if (!(error?.name === 'McpError' && error?.code === -32601)) {
+          if (!(error?.code === -32601)) {
               logger.error(`Error fetching prompts from ${connectedClient.name} during refresh:`, error?.message || error);
           }
     }
@@ -633,7 +622,7 @@ const isConnectionError = (err: any): boolean => {
 };
 
 // --- Server Creation ---
-export const createServer = async (initializeProxy = true) => {
+export const createServer = async (initializeProxy = true, registerNotificationSink = true) => {
   if (initializeProxy) {
     // Load initial config
     const initialServerConfig = await loadConfig(); // This now includes proxy settings
@@ -679,7 +668,9 @@ export const createServer = async (initializeProxy = true) => {
       },
     },
   );
-  notificationServer = server;
+  if (registerNotificationSink) {
+    notificationServer = server;
+  }
 
   // Auto-instrument transport-level MCP monitoring via Sentry.
   // wrapMcpServerWithSentry validates for McpServer's high-level API (tool/resource/prompt).
@@ -692,19 +683,21 @@ export const createServer = async (initializeProxy = true) => {
   wrapMcpServerWithSentry(server as unknown as Parameters<typeof wrapMcpServerWithSentry>[0]);
 
   // Register MCP notification sink so connected clients receive warning/error log notifications
-  addMcpNotificationSink((level, message) => {
-    server.sendLoggingMessage({
-      level: level as 'info' | 'warning' | 'error' | 'debug',
-      logger: 'mcp-proxy',
-      data: message,
-    }).catch(() => {}); // fire-and-forget; clients may disconnect
-  });
+  if (registerNotificationSink) {
+    addMcpNotificationSink((level, message) => {
+      server.sendLoggingMessage({
+        level: level as 'info' | 'warning' | 'error' | 'debug',
+        logger: 'mcp-proxy',
+        data: message,
+      }).catch(() => {}); // fire-and-forget; clients may disconnect
+    });
+  }
 
   // --- Request Handlers ---
   // These handlers now rely on the maps populated by updateBackendConnections
   // Note: InitializeRequest is handled by the SDK's Server default behavior.
 
-  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+  server.setRequestHandler('tools/list', async (request) => {
     logger.log("Received tools/list request - applying overrides from config");
     const enabledTools = buildExposedTools();
     const offset = decodeToolCursor(request.params?.cursor);
@@ -721,7 +714,7 @@ export const createServer = async (initializeProxy = true) => {
     } as any;
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler('tools/call', async (request) => {
     const { name: requestedExposedName, arguments: args } = request.params;
     const callStartTime = Date.now();
     let originalQualifiedName: string | undefined;
@@ -747,7 +740,7 @@ export const createServer = async (initializeProxy = true) => {
     if (!mapEntry || !originalQualifiedName) {
         const errorMessage = `Attempted to call tool with exposed name "${requestedExposedName}", but no corresponding enabled tool or override configuration found.`;
         logger.error(errorMessage);
-        throw new McpError(-32601, errorMessage); // Method not found error code
+        throw new ProtocolError(-32601, errorMessage); // Method not found error code
     }
 
     // Now we have the correct mapEntry and the originalQualifiedName
@@ -782,7 +775,7 @@ export const createServer = async (initializeProxy = true) => {
                     const clientTransportConfig = currentActiveServersConfig[clientForTool.name];
                     if (!clientTransportConfig) {
                         logger.error(`Cannot proceed with SSE: TransportConfig for server '${clientForTool.name}' not found.`);
-                        throw new McpError(-32000, `SSE TransportConfig for server '${clientForTool.name}' not found for tool '${requestedExposedName}'.`);
+                        throw new ProtocolError(-32000, `SSE TransportConfig for server '${clientForTool.name}' not found for tool '${requestedExposedName}'.`);
                     }
                     const refreshed = await refreshBackendConnection(clientForTool.name, clientTransportConfig);
                     if (refreshed) {
@@ -791,14 +784,14 @@ export const createServer = async (initializeProxy = true) => {
                         const newMapEntry = toolToClientMap.get(originalQualifiedName);
                         if (!newMapEntry) {
                             logger.error(`Tool '${originalQualifiedName}' not found in map after successful SSE refresh for server '${clientForTool.name}'.`);
-                            throw new McpError(-32000, `Tool '${originalQualifiedName}' disappeared after SSE refresh for server '${clientForTool.name}'.`);
+                            throw new ProtocolError(-32000, `Tool '${originalQualifiedName}' disappeared after SSE refresh for server '${clientForTool.name}'.`);
                         }
                         clientForTool = newMapEntry.client;
                         toolInfo = newMapEntry.toolInfo;
                         mcpHeaderMappings = newMapEntry.mcpHeaderMappings;
                     } else {
                         logger.error(`SSE Reconnection to server '${clientForTool.name}' failed.`);
-                        throw new McpError(-32000, `SSE Reconnection to server '${clientForTool.name}' failed for tool '${requestedExposedName}'.`);
+                        throw new ProtocolError(-32000, `SSE Reconnection to server '${clientForTool.name}' failed for tool '${requestedExposedName}'.`);
                     }
                 }
             }
@@ -843,7 +836,7 @@ export const createServer = async (initializeProxy = true) => {
                 durationMs: Date.now() - callStartTime,
                 callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
             }).catch(() => {});
-            return backendResponse; // Success! Return the response.
+            return backendResponse as any; // Backend response is validated by the upstream server.
         } catch (error: any) {
             lastError = error;
             logger.warn(`Attempt ${attempt + 1} to call tool '${requestedExposedName}' failed: ${error.message}`);
@@ -856,7 +849,7 @@ export const createServer = async (initializeProxy = true) => {
             });
 
             // Check if this error warrants a retry based on type and configuration
-            const isRetryableError = isConnectionError(error) || (error?.name === 'McpError' && error?.code === -32001); // Consider timeout as retryable
+            const isRetryableError = isConnectionError(error) || error?.code === -32001; // Consider timeout as retryable
             const shouldRetry = (clientForTool.transportType === 'sse' && currentProxyConfig.retrySseToolCall && isRetryableError) || // Check retrySseToolCall
                                 (clientForTool.transportType === 'stdio' && currentProxyConfig.retryStdioToolCall && isRetryableError) ||
                                 (clientForTool.transportType === 'http' && currentProxyConfig.retryHttpToolCall && isRetryableError);
@@ -883,11 +876,11 @@ export const createServer = async (initializeProxy = true) => {
                      durationMs: Date.now() - callStartTime,
                      callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
                  }).catch(() => {});
-                 // If the error is already an McpError, re-throw it directly. Otherwise, wrap it.
-                 if (error instanceof McpError) {
+                 // If the error is already a protocol error, re-throw it directly. Otherwise, wrap it.
+                 if (error instanceof ProtocolError) {
                      throw error;
                  } else {
-                     throw new McpError(error?.code || -32000, error.message || 'An unknown error occurred', error?.data);
+                     throw new ProtocolError(error?.code || -32000, error.message || 'An unknown error occurred', error?.data);
                  }
             }
 
@@ -912,11 +905,11 @@ export const createServer = async (initializeProxy = true) => {
                      durationMs: Date.now() - callStartTime,
                      callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
                  }).catch(() => {});
-                 // If the error is already an McpError, re-throw it directly. Otherwise, wrap it.
-                 if (error instanceof McpError) {
+                 // If the error is already a protocol error, re-throw it directly. Otherwise, wrap it.
+                 if (error instanceof ProtocolError) {
                      throw error;
                  } else {
-                     throw new McpError(error?.code || -32000, error.message || 'An unknown error occurred', error?.data);
+                     throw new ProtocolError(error?.code || -32000, error.message || 'An unknown error occurred', error?.data);
                  }
             }
 
@@ -946,13 +939,13 @@ export const createServer = async (initializeProxy = true) => {
         durationMs: Date.now() - callStartTime,
         callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
     }).catch(() => {});
-    // Ensure a structured McpError is returned to the client
-    throw new McpError(lastError?.code || -32000, errorMessage, lastError?.data);
+    // Ensure a structured protocol error is returned to the client
+    throw new ProtocolError(lastError?.code || -32000, errorMessage, lastError?.data);
 });
 
 // ... rest of the file ...
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  server.setRequestHandler('prompts/get', async (request) => {
     const { name } = request.params;
     const clientForPrompt = promptToClientMap.get(name);
 
@@ -986,7 +979,7 @@ export const createServer = async (initializeProxy = true) => {
     }
   });
 
-  server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
+  server.setRequestHandler('prompts/list', async (request) => {
     logger.log("Received prompts/list request - returning from cached map");
     // Directly use the pre-populated map
     const allPrompts: any[] = [];
@@ -1004,7 +997,7 @@ export const createServer = async (initializeProxy = true) => {
     };
   });
 
-   server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
+   server.setRequestHandler('resources/list', async (request) => {
        logger.log("Received resources/list request - returning from cached map");
        const allResources: any[] = [];
        for (const [uri, connectedClient] of resourceToClientMap.entries()) {
@@ -1022,7 +1015,7 @@ export const createServer = async (initializeProxy = true) => {
        };
    });
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler('resources/read', async (request) => {
     // This logic remains the same, using the map
     const { uri } = request.params;
     const clientForResource = resourceToClientMap.get(uri);
@@ -1049,8 +1042,8 @@ export const createServer = async (initializeProxy = true) => {
     }
   });
 
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request) => {
-    const allTemplates: ResourceTemplate[] = [];
+  server.setRequestHandler('resources/templates/list', async (request) => {
+    const allTemplates: any[] = [];
 
     // Iterate over the correct client list
     for (const connectedClient of currentConnectedClients) { // FIX: Use currentConnectedClients
@@ -1070,7 +1063,7 @@ export const createServer = async (initializeProxy = true) => {
 
         if (result.resourceTemplates) {
           // Add explicit type for template parameter
-          const templatesWithSource = result.resourceTemplates.map((template: ResourceTemplate) => ({ // FIX: Ensure type is present
+          const templatesWithSource = result.resourceTemplates.map(template => ({
             ...template,
             name: `[${connectedClient.name}] ${template.name || ''}`,
             description: template.description ? `[${connectedClient.name}] ${template.description}` : undefined
@@ -1078,7 +1071,7 @@ export const createServer = async (initializeProxy = true) => {
           allTemplates.push(...templatesWithSource);
         }
       } catch (error: any) {
-        const isMethodNotFoundError = error?.name === 'McpError' && error?.code === -32601;
+        const isMethodNotFoundError = error?.code === -32601;
 
         if (isMethodNotFoundError) {
           logger.warn(`Warning: Method 'resources/templates/list' not found on server ${connectedClient.name}. Proceeding without templates from this source.`);
@@ -1097,7 +1090,7 @@ export const createServer = async (initializeProxy = true) => {
     return {
       resourceTemplates: allTemplates,
       nextCursor: request.params?.cursor
-    };
+    } as any;
   });
 
   // Cleanup function needs to handle the *current* list of clients

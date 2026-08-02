@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Sentry } from './instrumentation.js';
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { logger } from './logger.js';
 import { createServer } from "./mcp-proxy.js";
 

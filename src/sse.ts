@@ -1,6 +1,7 @@
 import { isSentryEnabled, Sentry } from './instrumentation.js';
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StreamableHTTPServerTransport, StreamableHTTPServerTransportOptions } from "@modelcontextprotocol/sdk/server/streamableHttp.js"; // Import StreamableHTTPServerTransport and options
+import { SSEServerTransport } from "@modelcontextprotocol/server-legacy/sse";
+import { createMcpHandler, Server } from "@modelcontextprotocol/server";
+import { toNodeHandler } from "@modelcontextprotocol/node";
 import express, { Request, Response, NextFunction } from "express";
 import session from 'express-session';
 import helmet from 'helmet';
@@ -13,11 +14,8 @@ import { exec as execCallback, spawn } from 'child_process'; // Import spawn
 import { promisify } from 'util';
 // Import the necessary functions from mcp-proxy and config
 import { createServer, updateBackendConnections, getCurrentProxyState } from "./mcp-proxy.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import http from 'http';
 import { fileURLToPath } from 'url';
-// Import JSONRPCMessage and JSONRPCError from types
-import { Tool, ListToolsResultSchema, JSONRPCMessage, JSONRPCError } from "@modelcontextprotocol/sdk/types.js";
 // Import loadToolConfig as well
 import { Config, loadConfig, isStdioConfig, loadToolConfig } from './config.js';
 import { logger } from './logger.js';
@@ -90,7 +88,6 @@ const publicPath = path.join(__dirname, '..', 'public');
 
 type McpSession<TTransport> = { transport: TTransport; server: Server };
 const sseTransports = new Map<string, McpSession<SSEServerTransport>>();
-const streamableHttpTransports = new Map<string, McpSession<StreamableHTTPServerTransport>>();
 
 // createServer no longer returns connectedClients
 const { cleanup } = await createServer();
@@ -142,6 +139,13 @@ const rawStatelessHttp = process.env.STATELESS_HTTP;
 const statelessHttp = typeof rawStatelessHttp === 'string' &&
   (rawStatelessHttp.toLowerCase() === 'true' || rawStatelessHttp === '1' || rawStatelessHttp.toLowerCase() === 'yes');
 logger.log(`Stateless HTTP mode: ${statelessHttp}`);
+
+// v2 serves the 2026-era protocol through a per-request server factory and
+// provides a stateless 2025-era fallback from that same capability surface.
+const mcpHttpHandler = toNodeHandler(createMcpHandler(async () => {
+  const { server } = await createServer(false, false);
+  return server;
+}));
 
 async function getSessionSecret(): Promise<string> {
     if (SESSION_SECRET_ENV && SESSION_SECRET_ENV !== 'unsafe-default-secret' && SESSION_SECRET_ENV.trim() !== '') {
@@ -845,7 +849,34 @@ app.get("/sse", async (req, res) => {
 // Removed GET /message?action=new_session endpoint as it's deemed unnecessary.
 // The client should rely on the sessionId provided by the 'endpoint' event from the /sse connection.
 
-app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SSE and POST for messages
+app.all("/mcp", async (req, res) => {
+  const clientId = req.ip || `client-http-${Date.now()}`;
+  logger.log(`[${clientId}] Received ${req.method} request on /mcp`);
+
+  if (authEnabled) {
+    const authorization = req.headers.authorization;
+    const bearerToken = authorization?.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length).trim()
+      : undefined;
+    const apiKey = (req.headers['x-api-key'] as string | undefined) || (req.query.key as string | undefined);
+    if ((!bearerToken || !allowedTokens.has(bearerToken)) && (!apiKey || !allowedKeys.has(apiKey))) {
+      logger.warn(`[${clientId}] Unauthorized /mcp request.`);
+      res.status(401).send('Unauthorized');
+      return;
+    }
+  }
+
+  await mcpHttpHandler(req, res, req.body);
+});
+
+/*
+ * Removed v1 sessionful Streamable HTTP implementation. The v2 handler above
+ * owns `/mcp`; legacy 2025 traffic is handled by its stateless fallback.
+ *
+ * This block is retained temporarily as migration reference until the next
+ * cleanup release, but is not registered with Express or type-checked.
+ *
+app.all("/__legacy_mcp_v1", async (req, res) => {
   const clientId = req.ip || `client-http-${Date.now()}`;
   logger.log(`[${clientId}] Received ${req.method} request on /mcp`);
 
@@ -881,9 +912,12 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
   }
 
   if (statelessHttp) {
-    const statelessTransport = new StreamableHTTPServerTransport({
+    const statelessTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: false,
+      // Accept the latest client header while the v1 server negotiates its
+      // supported 2025-era protocol version during initialize.
+      supportedProtocolVersions: ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05', '2024-10-07'],
     });
     const { server: statelessServer } = await createServer(false);
     try {
@@ -900,7 +934,7 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
     return;
   }
 
-  let httpTransport: StreamableHTTPServerTransport | undefined;
+  let httpTransport: NodeStreamableHTTPServerTransport | undefined;
   const clientProvidedSessionId = req.headers['mcp-session-id'] as string | undefined;
   let transportSessionIdToUse: string | undefined = clientProvidedSessionId;
 
@@ -923,12 +957,16 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
     // Create a new transport. The transport itself will generate a session ID.
     logger.log(`[${clientId}] /mcp: No Mcp-Session-Id from client, or new session. Creating new StreamableHTTPServerTransport.`);
     const tempGeneratedIdForEarlyMap = `pending-${crypto.randomBytes(8).toString('hex')}`;
-    let capturedHttpTransportInstance: StreamableHTTPServerTransport | null = null; // To ensure closure captures the correct instance
+    let capturedHttpTransportInstance: NodeStreamableHTTPServerTransport | null = null; // To ensure closure captures the correct instance
     const { server: sessionServer } = await createServer(false);
 
     const newTransportOptions: StreamableHTTPServerTransportOptions = {
         sessionIdGenerator: () => crypto.randomUUID(), // Use crypto.randomUUID for session ID generation
         enableJsonResponse: false,
+        // The v1 SDK rejects this header before protocol negotiation. The Node
+        // v2 transport admits it, allowing the server to negotiate a supported
+        // version in its initialize response.
+        supportedProtocolVersions: ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05', '2024-10-07'],
         onsessioninitialized: (sdkGeneratedSessionId: string) => {
             logger.log(`[${clientId}] /mcp: SDK 'onsessioninitialized' called. SDK Session ID: ${sdkGeneratedSessionId}`);
             if (capturedHttpTransportInstance) {
@@ -970,7 +1008,7 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
         },
     };
 
-    httpTransport = new StreamableHTTPServerTransport(newTransportOptions);
+    httpTransport = new NodeStreamableHTTPServerTransport(newTransportOptions);
     capturedHttpTransportInstance = httpTransport; // Capture for the onsessioninitialized closure
     
     // Store with a temporary ID. This will be updated by onsessioninitialized when the SDK provides the actual session ID.
@@ -1064,6 +1102,7 @@ app.all("/mcp", async (req, res) => { // Changed to app.all to handle GET for SS
     }
   }
 });
+*/
 app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId as string;
   logger.log(`Received POST /message for Session ID: ${sessionId}`);
@@ -1120,13 +1159,12 @@ const shutdown = async (signal: string) => {
   logger.log(`\nReceived ${signal}. Shutting down gracefully...`);
   try {
     logger.log("Closing MCP client sessions...");
-    const sessions = new Set([...sseTransports.values(), ...streamableHttpTransports.values()]);
+    const sessions = new Set(sseTransports.values());
     await Promise.all([...sessions].map(async ({ transport, server }) => {
       await transport.close();
       await server.close();
     }));
     sseTransports.clear();
-    streamableHttpTransports.clear();
     logger.log("MCP client sessions closed.");
 
     logger.log("Cleaning up backend clients...");
