@@ -22,6 +22,13 @@ import { Config, loadConfig, isStdioConfig, loadToolConfig } from './config.js';
 import { logger } from './logger.js';
 // Import terminal router and related types/variables for shutdown
 import { terminalRouter, activeTerminals, TERMINAL_OUTPUT_SSE_CONNECTIONS, ActiveTerminal } from './terminal.js';
+import {
+    beginOidcAuthorization,
+    completeOidcAuthorization,
+    discoverOidcClient,
+    loadOidcSettings,
+    OidcTransaction,
+} from './admin-oidc.js';
 
 const exec = promisify(execCallback);
 
@@ -62,8 +69,9 @@ function parseInstallCommand(command: string): string[] {
 
 declare module 'express-session' {
   interface SessionData {
-    user?: { username: string };
+    user?: { username: string; subject?: string };
     csrfToken?: string;
+    oidc?: OidcTransaction;
   }
 }
 
@@ -101,7 +109,25 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'password';
 const SESSION_SECRET_ENV = process.env.SESSION_SECRET; // Read from env
 
-if (ADMIN_USERNAME === 'admin' || ADMIN_PASSWORD === 'password') {
+// Read the ENABLE_ADMIN_UI environment variable.
+const rawEnableAdminUI = process.env.ENABLE_ADMIN_UI;
+// Enable Admin UI if ENABLE_ADMIN_UI is 'true' (case-insensitive), '1', or 'yes' (case-insensitive).
+// Defaults to false if not set, empty, or any other value.
+const enableAdminUI = typeof rawEnableAdminUI === 'string' && (rawEnableAdminUI.toLowerCase() === 'true' || rawEnableAdminUI === '1' || rawEnableAdminUI.toLowerCase() === 'yes');
+
+const rawTrustProxy = process.env.TRUST_PROXY;
+const trustProxy = typeof rawTrustProxy === 'string' && (rawTrustProxy.toLowerCase() === 'true' || rawTrustProxy === '1' || rawTrustProxy.toLowerCase() === 'yes');
+if (trustProxy) {
+    // Only enable this when the immediately upstream proxy is trusted.
+    app.set('trust proxy', 1);
+    logger.log('Trusting one reverse-proxy hop for secure session cookies.');
+}
+
+const oidcSettings = enableAdminUI ? loadOidcSettings() : undefined;
+const oidcClientConfig = oidcSettings ? await discoverOidcClient(oidcSettings) : undefined;
+if (oidcSettings) {
+    logger.log(`Admin UI authentication: OIDC enabled for issuer ${oidcSettings.issuer}.`);
+} else if (ADMIN_USERNAME === 'admin' || ADMIN_PASSWORD === 'password') {
     if (process.env.NODE_ENV === 'production') {
         logger.error("FATAL: Default admin credentials detected in production. Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables before starting.");
         process.exit(1);
@@ -109,12 +135,6 @@ if (ADMIN_USERNAME === 'admin' || ADMIN_PASSWORD === 'password') {
     logger.warn("WARNING: Using default admin credentials. Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables for security.");
 }
 // SESSION_SECRET warning is handled in getSessionSecret
-
-// Read the ENABLE_ADMIN_UI environment variable.
-const rawEnableAdminUI = process.env.ENABLE_ADMIN_UI;
-// Enable Admin UI if ENABLE_ADMIN_UI is 'true' (case-insensitive), '1', or 'yes' (case-insensitive).
-// Defaults to false if not set, empty, or any other value.
-const enableAdminUI = typeof rawEnableAdminUI === 'string' && (rawEnableAdminUI.toLowerCase() === 'true' || rawEnableAdminUI === '1' || rawEnableAdminUI.toLowerCase() === 'yes');
 
 const rawStatelessHttp = process.env.STATELESS_HTTP;
 const statelessHttp = typeof rawStatelessHttp === 'string' &&
@@ -175,7 +195,9 @@ if (enableAdminUI) {
         cookie: {
             secure: process.env.NODE_ENV === 'production',
             httpOnly: true,
-            sameSite: 'strict',
+            // OIDC returns from a different site in a top-level GET navigation;
+            // Strict cookies would drop the login transaction before callback.
+            sameSite: oidcSettings ? 'lax' : 'strict',
             maxAge: 1000 * 60 * 60 // 1 hour
         }
     }));
@@ -208,6 +230,69 @@ if (enableAdminUI) {
         legacyHeaders: false,
     });
 
+    app.get('/admin/auth/mode', (req, res) => {
+        res.json({
+            mode: oidcSettings ? 'oidc' : 'local',
+            providerName: oidcSettings?.providerName || null,
+        });
+    });
+
+    app.get('/admin/auth/session', isAuthenticated, (req, res) => {
+        res.json({ csrfToken: req.session.csrfToken || null });
+    });
+
+    if (oidcSettings && oidcClientConfig) {
+        app.get('/admin/oidc/login', loginRateLimiter, async (req, res) => {
+            try {
+                const { authorizationUrl, transaction } = await beginOidcAuthorization(oidcClientConfig, oidcSettings);
+                req.session.oidc = transaction;
+                req.session.save((error) => {
+                    if (error) {
+                        logger.error('Unable to save OIDC login transaction:', error);
+                        return res.status(500).send('Unable to start sign-in.');
+                    }
+                    res.redirect(authorizationUrl);
+                });
+            } catch (error) {
+                logger.error('Unable to start OIDC sign-in:', error);
+                res.status(500).send('Unable to start sign-in.');
+            }
+        });
+
+        app.get('/admin/oidc/callback', async (req, res) => {
+            const transaction = req.session.oidc;
+            if (!transaction) {
+                logger.warn('Rejected OIDC callback without a login transaction.');
+                return res.redirect('/admin/index.html?oidc_error=login_expired');
+            }
+
+            try {
+                const callbackUrl = new URL(req.originalUrl, oidcSettings.redirectUri);
+                const user = await completeOidcAuthorization(oidcClientConfig, callbackUrl, transaction);
+                req.session.regenerate((regenerateError) => {
+                    if (regenerateError) {
+                        logger.error('Error regenerating OIDC admin session:', regenerateError);
+                        return res.redirect('/admin/index.html?oidc_error=session');
+                    }
+                    req.session.user = { username: user.username, subject: user.subject };
+                    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+                    req.session.save((saveError) => {
+                        if (saveError) {
+                            logger.error('Error saving OIDC admin session:', saveError);
+                            return res.redirect('/admin/index.html?oidc_error=session');
+                        }
+                        logger.log(`Admin OIDC user '${user.username}' logged in.`);
+                        res.redirect('/admin/');
+                    });
+                });
+            } catch (error) {
+                // Do not expose provider or token-validation details in the browser.
+                logger.warn('OIDC callback failed:', error);
+                delete req.session.oidc;
+                req.session.save(() => res.redirect('/admin/index.html?oidc_error=failed'));
+            }
+        });
+    } else {
     app.post('/admin/login', loginRateLimiter, (req, res) => {
         const { username, password } = req.body;
         if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
@@ -233,6 +318,7 @@ if (enableAdminUI) {
             res.status(401).json({ success: false, error: 'Invalid credentials' });
         }
     });
+    }
 
     app.post('/admin/logout', (req, res) => {
         const username = req.session.user?.username;

@@ -158,6 +158,33 @@ Example `config/tool_config.json`:
     export ADMIN_USERNAME=myadmin
     export ADMIN_PASSWORD=aVerySecurePassword123!
     ```
+-   **OIDC Admin Authentication**: Set all four variables below to replace the local Admin UI login with OpenID Connect. This works with any compliant provider; Authelia is one example. If none are set, the existing `ADMIN_USERNAME`/`ADMIN_PASSWORD` login remains available. Supplying only some of these variables prevents startup so an intended OIDC deployment cannot silently fall back to local credentials.
+    - `OIDC_ISSUER`: The Authelia OIDC issuer URL, for example `https://auth.example.com`.
+    - `OIDC_CLIENT_ID`: The registered confidential client ID.
+    - `OIDC_CLIENT_SECRET`: The raw secret for that client. Do not put this value in source control.
+    - `OIDC_REDIRECT_URI`: The exact registered callback URL, ending in `/admin/oidc/callback`, for example `https://mcp.example.com/admin/oidc/callback`.
+    - `OIDC_PROVIDER_NAME`: Optional display name used on the sign-in button, for example `Authelia`, `Keycloak`, or `Microsoft Entra ID`. Defaults to `OIDC provider`.
+    - The flow uses discovery, Authorization Code with PKCE S256, `state`, `nonce`, and `openid profile email` scopes. Every authenticated provider user receives full Admin UI access, including the terminal.
+    - For HTTPS terminated by one trusted reverse proxy, also set `TRUST_PROXY=true`; the included Nginx configuration already forwards `X-Forwarded-Proto`.
+
+    Example Authelia client settings:
+    ```yaml
+    identity_providers:
+      oidc:
+        clients:
+          - client_id: 'mcp-proxy-server'
+            client_name: 'MCP Proxy Server'
+            public: false
+            redirect_uris:
+              - 'https://mcp.example.com/admin/oidc/callback'
+            scopes: ['openid', 'profile', 'email']
+            grant_types: ['authorization_code']
+            response_types: ['code']
+            response_modes: ['query']
+            require_pkce: true
+            pkce_challenge_method: 'S256'
+    ```
+    Configure Authelia's stored client-secret representation according to its documentation, and pass the corresponding raw secret to `OIDC_CLIENT_SECRET`.
 -   **`SESSION_SECRET`**: Secret used to sign Admin UI session cookies. A secure secret is automatically generated and saved to `config/.session_secret` on first run if not provided.
     ```bash
     # Generate a strong secret: openssl rand -hex 32

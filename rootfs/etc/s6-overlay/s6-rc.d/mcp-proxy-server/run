@@ -10,6 +10,12 @@ export PORT=$(bashio::config 'port')
 export ENABLE_ADMIN_UI=$(bashio::config 'enable_admin_ui')
 export ADMIN_USERNAME=$(bashio::config 'admin_username')
 export ADMIN_PASSWORD=$(bashio::config 'admin_password')
+export OIDC_ISSUER=$(bashio::config 'oidc_issuer')
+export OIDC_CLIENT_ID=$(bashio::config 'oidc_client_id')
+export OIDC_CLIENT_SECRET=$(bashio::config 'oidc_client_secret')
+export OIDC_REDIRECT_URI=$(bashio::config 'oidc_redirect_uri')
+export OIDC_PROVIDER_NAME=$(bashio::config 'oidc_provider_name')
+export TRUST_PROXY=$(bashio::config 'trust_proxy')
 export TOOLS_FOLDER=$(bashio::config 'tools_folder')
 export ALLOWED_KEYS=$(bashio::config 'allowed_keys')
 export ALLOWED_TOKENS=$(bashio::config 'allowed_tokens')
@@ -17,7 +23,11 @@ bashio::log.info "Starting MCP Proxy Server..."
 bashio::log.info "Port: ${PORT}"
 bashio::log.info "Admin UI Enabled: ${ENABLE_ADMIN_UI}"
 if [[ "${ENABLE_ADMIN_UI}" == "true" ]]; then
-    bashio::log.info "Admin Username: ${ADMIN_USERNAME}"
+    if [[ -n "${OIDC_ISSUER}" ]]; then
+        bashio::log.info "Admin authentication: OIDC"
+    else
+        bashio::log.info "Admin Username: ${ADMIN_USERNAME}"
+    fi
 fi
 bashio::log.info "Tools Folder: ${TOOLS_FOLDER}" # This is /share/mcp_tools by default
 if [[ -n "${ALLOWED_KEYS}" ]]; then

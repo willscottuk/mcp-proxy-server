@@ -129,6 +129,15 @@ ENV ENABLE_ADMIN_UI=false
 ENV ADMIN_USERNAME=admin
 ENV ADMIN_PASSWORD=password
 
+# Optional OIDC admin authentication (all four values are required together)
+# ENV OIDC_ISSUER=https://auth.example.com
+# ENV OIDC_CLIENT_ID=mcp-proxy-server
+# ENV OIDC_CLIENT_SECRET=replace-me
+# ENV OIDC_REDIRECT_URI=https://mcp.example.com/admin/oidc/callback
+# ENV OIDC_PROVIDER_NAME=Authelia
+# Set when HTTPS is terminated by one trusted reverse proxy.
+# ENV TRUST_PROXY=true
+
 # Optional: Default folder for Stdio server installations via Admin UI
 ENV TOOLS_FOLDER=/tools
 

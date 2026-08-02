@@ -9,6 +9,7 @@ window.effectiveToolsFolder = effectiveToolsFolder; // Expose globally
 window.adminEventSource = null; // Expose adminEventSource globally from the start and keep it as a data property
 window.isServerConfigDirty = false; // Initialize and expose globally
 window.csrfToken = null; // CSRF token, set on login
+window.adminAuthMode = 'local';
 
 // Helper: return headers with CSRF token for state-changing requests
 function csrfHeaders(extra) {
@@ -23,6 +24,9 @@ const mainContent = document.getElementById('main-content');
 const mainNav = document.getElementById('main-nav');
 const loginForm = document.getElementById('login-form');
 const loginError = document.getElementById('login-error');
+const oidcLoginSection = document.getElementById('oidc-login-section');
+const oidcLoginError = document.getElementById('oidc-login-error');
+const oidcLoginButton = document.getElementById('oidc-login-button');
 const navServersButton = document.getElementById('nav-servers');
 const navToolsButton = document.getElementById('nav-tools');
 const navTerminalButton = document.getElementById('nav-terminal');
@@ -194,6 +198,40 @@ const showSection = (sectionId) => {
     }
 };
 
+const setLoginMode = (mode, providerName) => {
+    window.adminAuthMode = mode;
+    const oidcEnabled = mode === 'oidc';
+    if (loginForm) loginForm.style.display = oidcEnabled ? 'none' : 'flex';
+    if (oidcLoginSection) oidcLoginSection.style.display = oidcEnabled ? 'flex' : 'none';
+    if (oidcLoginButton) oidcLoginButton.textContent = `Sign in with ${providerName || 'OIDC provider'}`;
+};
+
+const loadAuthMode = async () => {
+    try {
+        const response = await fetch('/admin/auth/mode');
+        if (response.ok) {
+            const result = await response.json();
+            setLoginMode(result.mode === 'oidc' ? 'oidc' : 'local', result.providerName);
+            return;
+        }
+    } catch (error) {
+        console.warn('Unable to determine admin authentication mode.', error);
+    }
+    setLoginMode('local');
+};
+
+const showOidcCallbackError = () => {
+    const error = new URLSearchParams(window.location.search).get('oidc_error');
+    if (!error || !oidcLoginError) return;
+    const messages = {
+        login_expired: 'Your sign-in session expired. Please try again.',
+        session: 'Unable to establish a secure session. Please try again.',
+        failed: 'Sign-in failed. Please try again.'
+    };
+    oidcLoginError.textContent = messages[error] || 'Sign-in failed. Please try again.';
+    window.history.replaceState({}, document.title, '/admin/');
+};
+
 const checkLoginStatus = async () => {
     try {
         const response = await fetch('/admin/config');
@@ -216,6 +254,16 @@ const handleLoginSuccess = async () => {
     loginSection.style.display = 'none';
     mainNav.style.display = 'flex';
     mainContent.style.display = 'block';
+
+    try {
+        const sessionResponse = await fetch('/admin/auth/session');
+        if (sessionResponse.ok) {
+            const sessionData = await sessionResponse.json();
+            window.csrfToken = sessionData.csrfToken || null;
+        }
+    } catch (error) {
+        console.warn('Unable to retrieve the admin CSRF token.', error);
+    }
     
     try {
         const envResponse = await fetch('/admin/environment');
@@ -261,6 +309,7 @@ const handleLogoutSuccess = () => {
     const toolList = document.getElementById('tool-list'); if (toolList) toolList.innerHTML = '';
     currentServerConfig = {}; currentToolConfig = { tools: {} }; discoveredTools = []; toolDataLoaded = false;
     loginError.textContent = '';
+    if (oidcLoginError) oidcLoginError.textContent = '';
     if (adminEventSource) { 
         adminEventSource.close(); 
         adminEventSource = null; 
@@ -454,7 +503,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     if (executeParseConfigButton) executeParseConfigButton.addEventListener('click', handleParseConfigExecute);
 
-    checkLoginStatus();
+    loadAuthMode().then(() => {
+        checkLoginStatus();
+        showOidcCallbackError();
+    });
 
 }); 
 

@@ -21,6 +21,12 @@ options:
   enable_admin_ui: true # Defaulting to true for Ingress
   admin_username: "admin"
   admin_password: "password"
+  oidc_issuer: ""
+  oidc_client_id: ""
+  oidc_client_secret: ""
+  oidc_redirect_uri: ""
+  oidc_provider_name: "OIDC provider"
+  trust_proxy: false
   tools_folder: "/share/mcp_tools" # Default location for tools, accessible via /share in the addon
   mcp_proxy_sse_allowed_keys: ""
 schema:
@@ -28,6 +34,12 @@ schema:
   enable_admin_ui: bool
   admin_username: str
   admin_password: password
+  oidc_issuer: str?
+  oidc_client_id: str?
+  oidc_client_secret: password?
+  oidc_redirect_uri: str?
+  oidc_provider_name: str?
+  trust_proxy: bool
   tools_folder: str
   allowed_keys: str?
   allowed_tokens: str?
