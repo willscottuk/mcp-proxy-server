@@ -11,6 +11,33 @@ window.isServerConfigDirty = false; // Initialize and expose globally
 window.csrfToken = null; // CSRF token, set on login
 window.adminAuthMode = 'local';
 
+function showAdminNotice(message, state = 'info') {
+    let notice = document.getElementById('admin-notice');
+    if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'admin-notice';
+        notice.className = 'toast toast-top toast-end z-50';
+        document.body.appendChild(notice);
+    }
+    notice.innerHTML = `<div class="alert alert-${state === 'success' ? 'success' : state === 'error' ? 'error' : 'info'}"><span>${message}</span></div>`;
+    setTimeout(() => { if (notice) notice.innerHTML = ''; }, 4500);
+}
+
+function updateServerUnsavedStatus() {
+    const status = document.getElementById('server-unsaved-status');
+    if (!status) return;
+    status.textContent = window.isServerConfigDirty ? 'Unsaved changes' : 'No unsaved changes';
+    status.className = `text-sm ${window.isServerConfigDirty ? 'font-semibold text-warning' : 'text-base-content/60'}`;
+}
+
+function markServerConfigDirty() {
+    window.isServerConfigDirty = true;
+    updateServerUnsavedStatus();
+}
+window.showAdminNotice = showAdminNotice;
+window.markServerConfigDirty = markServerConfigDirty;
+window.updateServerUnsavedStatus = updateServerUnsavedStatus;
+
 // Helper: return headers with CSRF token for state-changing requests
 function csrfHeaders(extra) {
     const h = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
@@ -159,6 +186,7 @@ async function triggerReload(statusElement) {
                 toolDataLoaded = false; loadToolData();
             }
             window.isServerConfigDirty = false; 
+            updateServerUnsavedStatus();
         } else {
              statusElement.textContent = `Save successful, but failed to reload: ${reloadResult.error || reloadResponse.statusText}`;
              statusElement.style.color = 'red';
@@ -298,9 +326,19 @@ const handleLoginSuccess = async () => {
     if (typeof loadServerConfig === 'function') {
         await loadServerConfig(); 
         window.isServerConfigDirty = false; 
+        updateServerUnsavedStatus();
     } else { console.error("loadServerConfig function not found."); }
     if (typeof window.loadServerOverview === 'function') await window.loadServerOverview();
     await showCurrentAdminRoute();
+    if (window.location.pathname === '/admin/' || window.location.pathname === '/admin') {
+        const savedScroll = sessionStorage.getItem('mcp-proxy-server-scroll');
+        if (savedScroll) {
+            sessionStorage.removeItem('mcp-proxy-server-scroll');
+            requestAnimationFrame(() => window.scrollTo(0, Number(savedScroll)));
+        }
+        const lastSave = localStorage.getItem('mcp-proxy-server-last-save');
+        if (lastSave) document.getElementById('server-unsaved-status').textContent = `No unsaved changes · last saved ${lastSave}`;
+    }
     toolDataLoaded = false;
     loginError.textContent = '';
     connectAdminSSE();
@@ -333,6 +371,7 @@ const handleLogoutSuccess = () => {
         console.log("Admin SSE closed on logout."); 
     }
     window.isServerConfigDirty = false; 
+    updateServerUnsavedStatus();
 };
 
 function handleParseConfigExecute() {
@@ -417,6 +456,20 @@ function handleParseConfigExecute() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    ['server-search-input', 'server-status-filter', 'server-transport-filter', 'server-active-filter'].forEach(id => {
+        document.getElementById(id)?.addEventListener(id === 'server-search-input' ? 'input' : 'change', () => window.applyServerOverviewFilters?.());
+    });
+    document.addEventListener('input', event => {
+        if (event.target.closest?.('.server-entry')) markServerConfigDirty();
+    });
+    document.addEventListener('change', event => {
+        if (event.target.closest?.('.server-entry')) markServerConfigDirty();
+    });
+    window.addEventListener('beforeunload', event => {
+        if (!window.isServerConfigDirty) return;
+        event.preventDefault();
+        event.returnValue = '';
+    });
     if (navServersButton) navServersButton.addEventListener('click', () => window.location.href = '/admin/');
     if (navToolsButton) {
         navToolsButton.addEventListener('click', () => {
@@ -537,6 +590,6 @@ document.addEventListener('DOMContentLoaded', () => {
         showOidcCallbackError();
     });
 
-}); 
+});
 
 console.log("script.js loaded and initialized.");

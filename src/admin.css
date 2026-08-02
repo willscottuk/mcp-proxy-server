@@ -82,6 +82,19 @@ body {
   justify-content: space-between;
 }
 
+.server-save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  padding-bottom: 1rem;
+  background: color-mix(in oklab, var(--color-base-100) 92%, transparent);
+}
+
+.server-overview[hidden],
+.tool-entry[hidden] {
+  display: none;
+}
+
 .status-message:empty,
 .error-message:empty {
   display: none;

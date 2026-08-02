@@ -62,7 +62,24 @@
                     <button id="parse-server-config-button" class="add-button btn btn-outline btn-sm">Parse JSON</button>
                 </div>
             </div>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Filter servers">
+                <label class="input input-bordered flex items-center gap-2"><span class="sr-only">Search servers</span><input id="server-search-input" class="grow" type="search" placeholder="Search servers"></label>
+                <select id="server-status-filter" class="select select-bordered"><option value="">All health states</option><option value="connected">Connected</option><option value="error">Errors</option><option value="inactive">Inactive</option></select>
+                <select id="server-transport-filter" class="select select-bordered"><option value="">All transports</option><option value="http">HTTP</option><option value="sse">SSE</option><option value="stdio">Stdio</option></select>
+                <select id="server-active-filter" class="select select-bordered"><option value="">Active and inactive</option><option value="active">Active</option><option value="inactive">Inactive</option></select>
+            </div>
             <div id="server-overview-list" class="space-y-3"></div>
+            <div class="space-y-4 border-t border-base-300 pt-5">
+                <div>
+                    <h3 class="text-lg font-semibold">Server configuration</h3>
+                    <p class="mt-1 text-sm text-base-content/70">Edit any server here, then save and reload the proxy configuration.</p>
+                </div>
+                <div id="server-list" class="space-y-4"></div>
+                <div class="server-save-bar flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
+                    <button id="save-config-button" class="btn btn-primary">Save &amp; Reload Server Configuration</button>
+                    <span id="server-unsaved-status" class="text-sm text-base-content/60">No unsaved changes</span>
+                </div>
+            </div>
             <p id="save-status" class="status-message alert alert-info flex-1"></p>
         </section>
 
@@ -79,10 +96,7 @@
             <div id="server-detail-overview" class="server-detail-tab"></div>
             <div id="server-detail-tools" class="server-detail-tab" style="display: none;"></div>
             <div id="server-detail-configuration" class="server-detail-tab space-y-4" style="display: none;">
-                <div id="server-list" class="space-y-4"></div>
-                <div class="flex flex-wrap items-center gap-3 border-t border-base-300 pt-4">
-                    <button id="save-config-button" class="btn btn-primary">Save & Reload Server Configuration</button>
-                </div>
+                <div class="alert alert-info">Server configuration is edited from <a class="link font-semibold" href="/admin/">All servers</a>, where changes to multiple servers can be saved together.</div>
             </div>
         </section>
 

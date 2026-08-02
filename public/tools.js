@@ -106,6 +106,7 @@ async function loadToolData() {
 
         const envResult = await envResponse.json();
         serverToolnameSeparator = envResult.serverToolnameSeparator || toolsResult.serverToolnameSeparator || '__';
+        window.serverToolnameSeparator = serverToolnameSeparator;
         console.log(`Using server toolname separator from backend: "${serverToolnameSeparator}"`);
 
         renderTools();
@@ -168,8 +169,8 @@ function renderTools() {
     }
 }
 
-function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = false, isServerActive = true) {
-    if (!toolListDiv) return;
+function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = false, isServerActive = true, target = toolListDiv, readOnly = false) {
+    if (!target) return;
 
     const entryDiv = document.createElement('div');
     entryDiv.className = `tool-entry card border border-base-300 bg-base-100 shadow-sm collapsed${!isServerActive ? ' tool-server-inactive' : ''}`;
@@ -179,6 +180,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
     entryDiv.dataset.toolKey = toolKey;
 
     const exposedName = toolConfig.exposedName || toolKey;
+    const displayName = toolDefinition?.displayName || toolDefinition?.effectiveAnnotations?.title || exposedName;
     const exposedNameOverride = toolConfig.exposedName || '';
     const exposedDescriptionOverride = toolConfig.exposedDescription || '';
     const isEnabled = toolConfig.enabled !== false;
@@ -201,7 +203,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
                         <input type="checkbox" class="tool-enabled-input toggle toggle-primary" ${isEnabled ? 'checked' : ''} ${!isServerActive ? 'disabled' : ''}>
                     </label>
                     <div class="min-w-0 flex-1">
-                        <h3 class="break-words text-base font-semibold" title="${!isServerActive ? 'Server is inactive' : 'Expand tool details'}">${escapeHtml(exposedName)}</h3>
+                        <h3 class="break-words text-base font-semibold" title="${!isServerActive ? 'Server is inactive' : 'Expand tool details'}">${escapeHtml(displayName)}</h3>
                         <p class="mt-1 break-all text-xs text-base-content/60">${escapeHtml(toolKey)}</p>
                         <div class="mt-2 flex flex-wrap gap-2">
                             <span class="badge badge-outline">${escapeHtml(serverName)}</span>
@@ -276,7 +278,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
         </div>
     `;
 
-    toolListDiv.appendChild(entryDiv);
+    target.appendChild(entryDiv);
 
     const resetButton = entryDiv.querySelector('.reset-tool-overrides-button');
     if (resetButton) {
@@ -304,6 +306,12 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
     if (headerH3) {
         headerH3.addEventListener('click', () => {
             entryDiv.classList.toggle('collapsed');
+        });
+    }
+
+    if (readOnly) {
+        entryDiv.querySelectorAll('input, textarea, select, button').forEach(control => {
+            control.disabled = true;
         });
     }
 }

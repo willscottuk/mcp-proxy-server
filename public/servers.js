@@ -2,6 +2,36 @@
 const serverListDiv = document.getElementById('server-list');
 const serverOverviewListDiv = document.getElementById('server-overview-list');
 
+function copyServerValue(value, label) {
+    navigator.clipboard?.writeText(value).then(() => {
+        window.showAdminNotice?.(`${label} copied to clipboard.`, 'success');
+    }).catch(() => window.showAdminNotice?.(`Unable to copy ${label.toLowerCase()}.`, 'error'));
+}
+
+function applyServerOverviewFilters() {
+    const query = document.getElementById('server-search-input')?.value.trim().toLowerCase() || '';
+    const state = document.getElementById('server-status-filter')?.value || '';
+    const transport = document.getElementById('server-transport-filter')?.value || '';
+    const activity = document.getElementById('server-active-filter')?.value || '';
+    serverOverviewListDiv?.querySelectorAll('.server-overview').forEach(card => {
+        const matches = (!query || card.dataset.search.includes(query)) &&
+            (!state || card.dataset.health === state) &&
+            (!transport || card.dataset.transport === transport) &&
+            (!activity || card.dataset.activity === activity);
+        card.hidden = !matches;
+    });
+    const visible = [...(serverOverviewListDiv?.querySelectorAll('.server-overview') || [])].some(card => !card.hidden);
+    let empty = serverOverviewListDiv?.querySelector('.server-filter-empty');
+    if (!visible && !empty) {
+        empty = document.createElement('div');
+        empty.className = 'server-filter-empty alert';
+        empty.textContent = 'No servers match these filters.';
+        serverOverviewListDiv?.appendChild(empty);
+    } else if (visible && empty) {
+        empty.remove();
+    }
+}
+
 function escapeServerHtml(value) {
     return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
@@ -26,24 +56,36 @@ function renderServerOverview(servers) {
         serverOverviewListDiv.innerHTML = '<div class="alert">No servers configured.</div>';
         return;
     }
+    const lastConnected = JSON.parse(localStorage.getItem('mcp-proxy-server-last-connected') || '{}');
+    servers.forEach(server => {
+        if (server.health?.state === 'connected') lastConnected[server.key] = server.health.checkedAt || new Date().toLocaleString();
+    });
+    localStorage.setItem('mcp-proxy-server-last-connected', JSON.stringify(lastConnected));
     serverOverviewListDiv.innerHTML = servers.slice().sort((a, b) => a.name.localeCompare(b.name)).map(server => {
         const health = server.health || { state: 'checking' };
         const stateClass = health.state === 'connected' ? 'badge-success' : health.state === 'error' ? 'badge-error' : health.state === 'inactive' ? 'badge-ghost' : 'badge-info';
         const counts = server.toolCounts || {};
         const href = `/admin/servers/${encodeURIComponent(server.key)}`;
-        return `<article class="server-overview card border border-base-300 bg-base-100 shadow-sm">
+        const search = `${server.name} ${server.key} ${server.transportType} ${health.state}`.toLowerCase();
+        return `<article class="server-overview card border border-base-300 bg-base-100 shadow-sm" data-search="${escapeServerHtml(search)}" data-health="${escapeServerHtml(health.state)}" data-transport="${escapeServerHtml(server.transportType)}" data-activity="${server.active ? 'active' : 'inactive'}">
             <div class="card-body gap-3 lg:flex-row lg:items-center">
                 <div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><h3 class="text-lg font-semibold">${escapeServerHtml(server.name)}</h3><span class="badge ${stateClass}">${escapeServerHtml(health.state)}</span><span class="badge badge-outline">${escapeServerHtml(server.transportType)}</span></div>
                 <p class="mt-1 break-all text-sm text-base-content/60">${escapeServerHtml(server.key)}</p>
-                <div class="mt-2 flex flex-wrap gap-2 text-sm"><span class="badge badge-neutral">${counts.exposed || 0} exposed</span><span class="badge badge-outline">${counts.discovered || 0} discovered</span>${counts.disabled ? `<span class="badge badge-warning">${counts.disabled} disabled</span>` : ''}${counts.problems ? `<span class="badge badge-error">${counts.problems} problems</span>` : ''}</div>
-                ${health.error ? `<p class="mt-2 text-sm text-error">${escapeServerHtml(health.error)}</p>` : ''}</div>
-                <a class="btn btn-primary btn-sm" href="${href}">View server</a>
+                <div class="mt-2 flex flex-wrap gap-2 text-sm"><span class="badge badge-neutral">${counts.exposed || 0} exposed</span><span class="badge badge-outline">${counts.discovered || 0} discovered</span>${counts.disabled ? `<span class="badge badge-warning">${counts.disabled} disabled</span>` : ''}${counts.problems ? `<span class="badge badge-error">${counts.problems} problems</span>` : ''}</div><p class="mt-2 text-xs text-base-content/60">Last successful connection: ${lastConnected[server.key] ? escapeServerHtml(new Date(lastConnected[server.key]).toLocaleString()) : 'Not recorded'}</p>
+                ${health.error ? `<div class="mt-2 flex flex-wrap items-center gap-2"><p class="text-sm text-error">${escapeServerHtml(health.error)}</p><button class="btn btn-ghost btn-xs copy-server-error" data-copy="${escapeServerHtml(health.error)}">Copy error</button><a class="link text-sm" href="/admin/terminal.html">View logs</a></div>` : ''}</div>
+                <div class="flex flex-wrap gap-2"><button class="btn btn-ghost btn-sm copy-server-key" data-copy="${escapeServerHtml(server.key)}">Copy key</button><a class="btn btn-primary btn-sm server-detail-link" href="${href}">View server</a></div>
             </div></article>`;
     }).join('');
+    serverOverviewListDiv.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', () => copyServerValue(button.dataset.copy, button.classList.contains('copy-server-error') ? 'Error details' : 'Server key')));
+    serverOverviewListDiv.querySelectorAll('.server-detail-link').forEach(link => link.addEventListener('click', () => sessionStorage.setItem('mcp-proxy-server-scroll', String(window.scrollY))));
+    applyServerOverviewFilters();
 }
 
 async function renderServerDetail(serverKey) {
     const config = window.currentServerConfig?.mcpServers?.[serverKey];
+    if (!window.toolDataLoaded && typeof window.loadToolData === 'function') {
+        await window.loadToolData();
+    }
     const status = window.currentProxyStatus || { servers: [], tools: [] };
     const server = (status.servers || []).find(item => item.key === serverKey);
     const header = document.getElementById('server-detail-header');
@@ -53,14 +95,79 @@ async function renderServerDetail(serverKey) {
     const health = server?.health || { state: config.active === false ? 'inactive' : 'checking' };
     header.innerHTML = `<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div class="flex flex-wrap items-center gap-2"><h2 class="text-2xl font-semibold">${escapeServerHtml(config.name || serverKey)}</h2><span class="badge ${health.state === 'connected' ? 'badge-success' : health.state === 'error' ? 'badge-error' : 'badge-ghost'}">${escapeServerHtml(health.state)}</span><span class="badge badge-outline">${escapeServerHtml(config.type)}</span></div><p class="mt-1 font-mono text-sm text-base-content/60">${escapeServerHtml(serverKey)}</p></div><button id="refresh-server-button" class="btn btn-outline btn-sm">Refresh health</button></div>`;
     overview.innerHTML = `<div class="grid gap-4 md:grid-cols-3"><div class="stat rounded-box border border-base-300"><div class="stat-title">Exposed tools</div><div class="stat-value text-primary">${server?.toolCounts?.exposed || 0}</div></div><div class="stat rounded-box border border-base-300"><div class="stat-title">Discovered tools</div><div class="stat-value">${server?.toolCounts?.discovered || 0}</div></div><div class="stat rounded-box border border-base-300"><div class="stat-title">Last checked</div><div class="stat-desc">${health.checkedAt ? escapeServerHtml(new Date(health.checkedAt).toLocaleString()) : 'Not checked yet'}</div></div></div>${health.error ? `<div class="alert alert-error mt-4">${escapeServerHtml(health.error)}</div>` : ''}`;
-    const serverTools = (status.tools || []).filter(tool => tool.serverName === serverKey);
-    tools.innerHTML = serverTools.length ? `<div class="space-y-3">${serverTools.map(tool => `<article class="card border border-base-300 bg-base-100"><div class="card-body py-4"><div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between"><div><h3 class="font-semibold">${escapeServerHtml(tool.qualifiedName)}</h3><p class="text-sm text-base-content/60">${escapeServerHtml(tool.description || 'No description')}</p></div><div class="flex flex-wrap gap-2"><span class="badge ${tool.proxyState === 'exposed' ? 'badge-success' : tool.proxyState === 'disabled' ? 'badge-warning' : 'badge-error'}">${escapeServerHtml(tool.proxyState)}</span><span class="badge badge-outline">${escapeServerHtml(tool.effectiveToolType || 'unspecified')}</span></div></div></div></article>`).join('')}</div>` : '<div class="alert">No tools are currently associated with this server.</div>';
+    const discoveredTools = (window.discoveredTools || []).filter(tool => tool.serverName === serverKey);
+    const configuredTools = window.currentToolConfig?.tools || {};
+    const configuredOnlyKeys = Object.keys(configuredTools).filter(toolKey =>
+        toolKey.split(window.serverToolnameSeparator || '__')[0] === serverKey &&
+        !discoveredTools.some(tool => (tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`) === toolKey)
+    );
+    tools.innerHTML = '';
+    if (discoveredTools.length || configuredOnlyKeys.length) {
+        const controls = document.createElement('div');
+        controls.className = 'flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-4 lg:flex-row lg:items-center';
+        controls.innerHTML = `<label class="input input-bordered flex flex-1 items-center gap-2"><span class="sr-only">Search tools</span><input class="server-tool-search grow" type="search" placeholder="Search tools"></label><select class="server-tool-filter select select-bordered"><option value="">All tools</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="read">Read</option><option value="write">Write</option><option value="destructive">Destructive</option></select><button class="server-tools-enable btn btn-outline btn-sm">Enable all</button><button class="server-tools-disable btn btn-outline btn-warning btn-sm">Disable all</button><select class="server-tools-type select select-bordered select-sm"><option value="read">Mark all read</option><option value="write">Mark all write</option><option value="destructive">Mark all destructive</option></select><button class="server-tools-apply-type btn btn-outline btn-sm">Apply type</button>`;
+        tools.appendChild(controls);
+        const intro = document.createElement('div');
+        intro.className = 'alert alert-info';
+        intro.innerHTML = 'This is the complete tool metadata view. Tool exposure and overrides can be changed in <button class="link font-semibold">Tool Configuration</button>.';
+        intro.querySelector('button')?.addEventListener('click', () => document.getElementById('nav-tools')?.click());
+        tools.appendChild(intro);
+        const list = document.createElement('div');
+        list.className = 'mt-4 space-y-4';
+        tools.appendChild(list);
+        discoveredTools
+            .slice()
+            .sort((a, b) => (a.qualifiedName || a.name).localeCompare(b.qualifiedName || b.name))
+            .forEach(tool => {
+                const toolKey = tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`;
+                window.renderToolEntry?.(toolKey, tool, configuredTools[toolKey] || {}, false, true, list, true);
+            });
+        configuredOnlyKeys.forEach(toolKey => {
+            window.renderToolEntry?.(toolKey, null, configuredTools[toolKey], true, config.active !== false, list, true);
+        });
+        const filterTools = () => {
+            const query = controls.querySelector('.server-tool-search').value.trim().toLowerCase();
+            const filter = controls.querySelector('.server-tool-filter').value;
+            list.querySelectorAll('.tool-entry').forEach(entry => {
+                const text = entry.textContent.toLowerCase();
+                const enabled = entry.querySelector('.tool-enabled-input')?.checked;
+                const type = entry.querySelector('.tool-calltype-input')?.value || (text.includes('destructive') ? 'destructive' : text.includes('write') ? 'write' : text.includes('read') ? 'read' : '');
+                entry.hidden = !!(query && !text.includes(query)) || !!(filter && (filter === 'enabled' ? !enabled : filter === 'disabled' ? enabled : type !== filter));
+            });
+        };
+        controls.querySelector('.server-tool-search').addEventListener('input', filterTools);
+        controls.querySelector('.server-tool-filter').addEventListener('change', filterTools);
+        const setAllTools = (enabled) => {
+            if (!confirm(`${enabled ? 'Enable' : 'Disable'} every discovered tool for ${config.name || serverKey}? You will be taken to Tool Configuration to review and save these changes.`)) return;
+            discoveredTools.forEach(tool => {
+                const key = tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`;
+                window.currentToolConfig.tools[key] = { ...(window.currentToolConfig.tools[key] || {}), enabled };
+            });
+            window.renderTools?.();
+            document.getElementById('nav-tools')?.click();
+            window.showAdminNotice?.(`All ${discoveredTools.length} tools are marked ${enabled ? 'enabled' : 'disabled'}. Save the Tool Configuration to apply.`, 'info');
+        };
+        controls.querySelector('.server-tools-enable').addEventListener('click', () => setAllTools(true));
+        controls.querySelector('.server-tools-disable').addEventListener('click', () => setAllTools(false));
+        controls.querySelector('.server-tools-apply-type').addEventListener('click', () => {
+            const toolType = controls.querySelector('.server-tools-type').value;
+            if (!confirm(`Mark every discovered tool for ${config.name || serverKey} as ${toolType}? You will be taken to Tool Configuration to review and save this change.`)) return;
+            discoveredTools.forEach(tool => {
+                const key = tool.qualifiedName || `${tool.serverName}${window.serverToolnameSeparator || '__'}${tool.name}`;
+                window.currentToolConfig.tools[key] = { ...(window.currentToolConfig.tools[key] || {}), toolType };
+            });
+            window.renderTools?.();
+            document.getElementById('nav-tools')?.click();
+            window.showAdminNotice?.(`All ${discoveredTools.length} tools are marked ${toolType}. Save the Tool Configuration to apply.`, 'info');
+        });
+    } else {
+        tools.innerHTML = '<div class="alert">No tools are currently associated with this server.</div>';
+    }
     header.querySelector('#refresh-server-button')?.addEventListener('click', async () => {
         const button = header.querySelector('#refresh-server-button'); button.disabled = true; button.textContent = 'Refreshing…';
         try { await fetch(`/admin/servers/${encodeURIComponent(serverKey)}/refresh`, { method: 'POST', headers: csrfHeaders({}) }); await loadServerOverview(); await renderServerDetail(serverKey); }
         finally { button.disabled = false; button.textContent = 'Refresh health'; }
     });
-    renderServerConfig({ mcpServers: { [serverKey]: config } });
     return true;
 }
 // saveConfigButton and saveStatus are obtained within initializeServerSaveListener
@@ -81,6 +188,7 @@ async function loadServerConfig() {
         // addInstallButtonListeners is called within renderServerConfig after rendering all entries
         localSaveStatus.textContent = 'Server configuration loaded.';
         window.isServerConfigDirty = false; // Reset dirty flag after successful load
+        window.updateServerUnsavedStatus?.();
         setTimeout(() => { if(localSaveStatus) localSaveStatus.textContent = ''; }, 3000);
     } catch (error) {
         console.error("Error loading server config:", error);
@@ -208,7 +316,7 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
     if (addEnvVarButton) {
         addEnvVarButton.addEventListener('click', () => {
             addEnvVarRow(envVarsContainer);
-            window.isServerConfigDirty = true;
+            window.markServerConfigDirty?.();
         });
     }
 
@@ -219,7 +327,7 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
         e.stopPropagation();
         if (confirm(`Are you sure you want to delete server "${serverConf.name || key}"?`)) {
             entryDiv.remove();
-            window.isServerConfigDirty = true; 
+            window.markServerConfigDirty?.();
         }
     });
 
@@ -230,7 +338,7 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
     if (serverTypeFromDataset === 'stdio' && installDirInput) {
         installDirInput.addEventListener('input', () => {
             entryDiv.dataset.installDirManuallyEdited = 'true'; // User is manually editing
-            window.isServerConfigDirty = true; 
+            window.markServerConfigDirty?.();
             if (installButton) {
                 const hasDir = !!installDirInput.value.trim();
                 installButton.disabled = !hasDir;
@@ -242,7 +350,7 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
     const keyInput = detailsDiv.querySelector('.server-key-input');
     if (serverTypeFromDataset === 'stdio' && keyInput && installDirInput) {
         keyInput.addEventListener('input', () => {
-            window.isServerConfigDirty = true;
+            window.markServerConfigDirty?.();
             const currentKey = keyInput.value.trim();
             
             if (entryDiv.dataset.installDirManuallyEdited !== 'true') {
@@ -266,10 +374,10 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
     }
     
     detailsDiv.querySelectorAll('input:not(.server-key-input):not(.server-install-dir-input), textarea').forEach(input => {
-        input.addEventListener('input', () => { window.isServerConfigDirty = true; });
+        input.addEventListener('input', () => { window.markServerConfigDirty?.(); });
     });
     detailsDiv.querySelectorAll('input[type="checkbox"]').forEach(input => {
-        input.addEventListener('change', () => { window.isServerConfigDirty = true; });
+        input.addEventListener('change', () => { window.markServerConfigDirty?.(); });
     });
     // Server key and install dir already have specific listeners that set dirty flag
 
@@ -303,10 +411,10 @@ function addEnvVarRow(container, key = '', value = '') {
     `;
     rowDiv.querySelector('.delete-env-var-button').addEventListener('click', () => {
         rowDiv.remove();
-        window.isServerConfigDirty = true; 
+        window.markServerConfigDirty?.();
     });
     rowDiv.querySelectorAll('input').forEach(input => {
-        input.addEventListener('input', () => { window.isServerConfigDirty = true; });
+        input.addEventListener('input', () => { window.markServerConfigDirty?.(); });
     });
     container.appendChild(rowDiv);
 }
@@ -513,6 +621,8 @@ function initializeServerSaveListener() {
                 localSaveStatus.style.color = 'green';
                 window.currentServerConfig = newConfig;
                 window.isServerConfigDirty = false; 
+                localStorage.setItem('mcp-proxy-server-last-save', new Date().toLocaleString());
+                window.updateServerUnsavedStatus?.();
                 renderServerConfig(window.currentServerConfig); 
                 if (typeof window.triggerReload === 'function') {
                     await window.triggerReload(localSaveStatus);
@@ -538,6 +648,7 @@ function initializeServerSaveListener() {
 // Expose functions to be called from script.js
 window.loadServerConfig = loadServerConfig;
 window.loadServerOverview = loadServerOverview;
+window.applyServerOverviewFilters = applyServerOverviewFilters;
 window.renderServerDetail = renderServerDetail;
 window.renderServerEntry = renderServerEntry; // Keep this exposed if script.js uses it directly
 window.addInstallButtonListeners = addInstallButtonListeners;
@@ -577,7 +688,7 @@ window.addNewServerEntry = function(type) {
     window.currentServerConfig.mcpServers[newKey] = defaultConfig;
 
     renderServerEntry(newKey, defaultConfig, true); // Render expanded
-    window.isServerConfigDirty = true;
+    window.markServerConfigDirty?.();
     const newEntryDiv = serverListDiv.querySelector(`.server-entry[data-server-key="${newKey}"]`);
     if (newEntryDiv) {
         newEntryDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });

@@ -196,6 +196,29 @@ function annotationsForToolType(annotations: Tool['annotations'], toolType: Tool
   return next;
 }
 
+/**
+ * MCP tool names are stable identifiers and must remain valid machine-facing
+ * names. The annotation title is the client-facing label, so use it to make
+ * tools recognisable when several backend servers expose similarly named
+ * operations.
+ */
+function toolDisplayTitle(serverKey: string, toolInfo: Tool): string {
+  const serverDisplayName = currentActiveServersConfig[serverKey]?.name || serverKey;
+  const upstreamTitle = toolInfo.annotations?.title?.trim();
+  const fallbackTitle = toolInfo.name
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+  return `${serverDisplayName}: ${upstreamTitle || fallbackTitle}`;
+}
+
+function annotationsWithDisplayTitle(
+  annotations: Tool['annotations'],
+  serverKey: string,
+  toolInfo: Tool,
+): Tool['annotations'] {
+  return { ...(annotations || {}), title: toolDisplayTitle(serverKey, toolInfo) } as Tool['annotations'];
+}
+
 function getArgumentAtPath(args: JsonObject, path: string[]): unknown {
   let current: unknown = args;
   for (const segment of path) {
@@ -281,13 +304,14 @@ async function withHttpRequestHeaders<T>(
 function buildExposedTools(): Tool[] {
   const toolOverrides = currentToolConfig.tools || {};
   const enabledTools: Tool[] = [];
-  for (const [originalQualifiedName, { toolInfo }] of toolToClientMap.entries()) {
+  for (const [originalQualifiedName, { client, toolInfo }] of toolToClientMap.entries()) {
     const overrideSettings = toolOverrides[originalQualifiedName];
+    const typeAnnotations = annotationsForToolType(toolInfo.annotations, configuredToolType(overrideSettings));
     enabledTools.push({
       ...toolInfo,
       name: overrideSettings?.exposedName || originalQualifiedName,
       description: overrideSettings?.exposedDescription || toolInfo.description,
-      annotations: annotationsForToolType(toolInfo.annotations, configuredToolType(overrideSettings)),
+      annotations: annotationsWithDisplayTitle(typeAnnotations, client.name, toolInfo),
     });
   }
   return enabledTools.sort((a, b) => a.name.localeCompare(b.name));
@@ -634,8 +658,9 @@ export const getCurrentProxyState = () => {
         const upstreamToolType = toolTypeFromAnnotations(toolInfo.annotations);
         const effectiveToolType = overrideType || upstreamToolType;
         return {
-            qualifiedName,
-            name: toolInfo.name,
+          qualifiedName,
+          name: toolInfo.name,
+          displayName: toolDisplayTitle(connectedClient?.name || 'Unknown', toolInfo),
             serverName: connectedClient?.name || 'Unknown',
             transportType: connectedClient?.transportType || 'unknown',
             description: toolInfo.description,
@@ -651,7 +676,7 @@ export const getCurrentProxyState = () => {
             upstreamToolType: upstreamToolType || 'unspecified',
             effectiveToolType: effectiveToolType || 'unspecified',
             toolTypeSource: overrideType ? 'override' : upstreamToolType ? 'upstream' : 'unspecified',
-            effectiveAnnotations: annotationsForToolType(toolInfo.annotations, overrideType),
+            effectiveAnnotations: annotationsWithDisplayTitle(annotationsForToolType(toolInfo.annotations, overrideType), connectedClient?.name || 'Unknown', toolInfo),
         };
     });
     const configuredToolKeys = new Set(tools.map(tool => tool.qualifiedName));
@@ -660,6 +685,7 @@ export const getCurrentProxyState = () => {
         const serverName = qualifiedName.split(currentSeparator)[0] || 'Unknown';
         tools.push({
           qualifiedName, name: qualifiedName.split(currentSeparator).slice(1).join(currentSeparator) || qualifiedName,
+          displayName: `${currentActiveServersConfig[serverName]?.name || serverName}: ${qualifiedName.split(currentSeparator).slice(1).join(currentSeparator) || qualifiedName}`,
           serverName, transportType: 'unknown', description: undefined, inputSchema: undefined, outputSchema: undefined,
           annotations: undefined, execution: undefined, icons: undefined, _meta: undefined, mcpHeaderMappings: [],
           proxyState: 'missing', rejectionReason: 'Configured but not currently discovered from this server.',
