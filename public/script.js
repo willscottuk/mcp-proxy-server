@@ -198,6 +198,21 @@ const showSection = (sectionId) => {
     }
 };
 
+async function showCurrentAdminRoute() {
+    const match = window.location.pathname.match(/^\/admin\/servers\/([^/]+)$/);
+    if (match) {
+        const serverKey = decodeURIComponent(match[1]);
+        showSection('server-detail-section');
+        const found = await window.renderServerDetail?.(serverKey);
+        if (!found) {
+            const header = document.getElementById('server-detail-header');
+            if (header) header.innerHTML = '<div class="alert alert-warning">Server not found. <a class="link" href="/admin/">Return to all servers.</a></div>';
+        }
+        return;
+    }
+    showSection('servers-section');
+}
+
 const setLoginMode = (mode, providerName) => {
     window.adminAuthMode = mode;
     const oidcEnabled = mode === 'oidc';
@@ -280,11 +295,12 @@ const handleLoginSuccess = async () => {
         window.effectiveToolsFolder = 'tools'; 
     }
 
-    showSection('servers-section');
     if (typeof loadServerConfig === 'function') {
         await loadServerConfig(); 
         window.isServerConfigDirty = false; 
     } else { console.error("loadServerConfig function not found."); }
+    if (typeof window.loadServerOverview === 'function') await window.loadServerOverview();
+    await showCurrentAdminRoute();
     toolDataLoaded = false;
     loginError.textContent = '';
     connectAdminSSE();
@@ -401,7 +417,7 @@ function handleParseConfigExecute() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    if (navServersButton) navServersButton.addEventListener('click', () => showSection('servers-section'));
+    if (navServersButton) navServersButton.addEventListener('click', () => window.location.href = '/admin/');
     if (navToolsButton) {
         navToolsButton.addEventListener('click', () => {
             showSection('tools-section');
@@ -410,6 +426,19 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     if (navTerminalButton) navTerminalButton.addEventListener('click', () => window.location.href = 'terminal.html');
+    document.getElementById('refresh-all-servers-button')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget; button.disabled = true; button.textContent = 'Refreshing…';
+        try {
+            const status = window.currentProxyStatus || { servers: [] };
+            await Promise.all((status.servers || []).filter(server => server.active).map(server => fetch(`/admin/servers/${encodeURIComponent(server.key)}/refresh`, { method: 'POST', headers: csrfHeaders({}) })));
+            await window.loadServerOverview?.();
+        } finally { button.disabled = false; button.textContent = 'Refresh health'; }
+    });
+    document.querySelectorAll('[data-server-tab]').forEach(tab => tab.addEventListener('click', () => {
+        document.querySelectorAll('[data-server-tab]').forEach(item => item.classList.remove('tab-active'));
+        tab.classList.add('tab-active');
+        document.querySelectorAll('.server-detail-tab').forEach(panel => { panel.style.display = panel.id === `server-detail-${tab.dataset.serverTab}` ? 'block' : 'none'; });
+    }));
     if (logoutButton) {
         logoutButton.addEventListener('click', async () => {
             try {

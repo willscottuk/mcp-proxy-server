@@ -390,6 +390,41 @@ if (enableAdminUI) {
         }
     });
 
+    app.get('/admin/status', isAuthenticated, async (req, res) => {
+        try {
+            const config = await loadConfig();
+            const runtime = getCurrentProxyState();
+            const runtimeByKey = new Map(runtime.servers.map(server => [server.key, server]));
+            const servers = Object.entries(config.mcpServers).map(([key, server]) => {
+                const current = runtimeByKey.get(key);
+                const inactive = server.active === false || String(server.active).toLowerCase() === 'false';
+                return {
+                    key, name: server.name || key, transportType: server.type,
+                    active: !inactive,
+                    health: current?.health || { state: inactive ? 'inactive' : 'checking', checkedAt: runtime.checkedAt },
+                    toolCounts: current?.toolCounts || { discovered: 0, exposed: 0, disabled: 0, problems: 0 },
+                };
+            });
+            res.json({ ...runtime, servers });
+        } catch (error: any) {
+            logger.error('Admin status error:', error);
+            res.status(500).json({ error: 'Failed to retrieve proxy status.' });
+        }
+    });
+
+    app.post('/admin/servers/:serverKey/refresh', isAuthenticated, csrfProtect, async (req, res) => {
+        try {
+            const serverKey = req.params.serverKey;
+            const serverConfig = await loadConfig();
+            if (!serverConfig.mcpServers[serverKey]) return res.status(404).json({ error: 'Server not found.' });
+            await updateBackendConnections(serverConfig, await loadToolConfig(), new Set([serverKey]));
+            res.json({ success: true, status: getCurrentProxyState() });
+        } catch (error: any) {
+            logger.error('Admin server refresh error:', error);
+            res.status(500).json({ success: false, error: 'Failed to refresh server.' });
+        }
+    });
+
     app.get('/admin/tools/config', isAuthenticated, async (req, res) => {
         try {
             logger.log("Admin request: GET /admin/tools/config");
@@ -414,6 +449,11 @@ if (enableAdminUI) {
 
             if (typeof newToolConfigData !== 'object' || newToolConfigData === null || typeof newToolConfigData.tools !== 'object') {
                 return res.status(400).json({ error: 'Invalid tool configuration format: Expected { "tools": { ... } }.' });
+            }
+            for (const [toolKey, settings] of Object.entries(newToolConfigData.tools as Record<string, any>)) {
+                if (!settings || typeof settings !== 'object' || (settings.toolType !== undefined && !['read', 'write', 'destructive'].includes(settings.toolType))) {
+                    return res.status(400).json({ error: `Invalid tool type for '${toolKey}'.` });
+                }
             }
 
             const configString = JSON.stringify(newToolConfigData, null, 2);
@@ -708,6 +748,11 @@ if (enableAdminUI) {
     // Static file serving for admin UI should also be inside the if block
     logger.log(`Serving static admin files from: ${publicPath}`);
     app.use('/admin', express.static(publicPath));
+
+    // Direct, shareable admin detail links are handled by the client application.
+    app.get('/admin/servers/:serverKey', (req, res) => {
+        res.sendFile(path.join(publicPath, 'index.html'));
+    });
 
     app.get('/admin', (req, res) => {
         res.redirect('/admin/index.html');

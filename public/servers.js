@@ -1,5 +1,68 @@
 // --- DOM Elements (Assumed to be globally accessible or passed) ---
 const serverListDiv = document.getElementById('server-list');
+const serverOverviewListDiv = document.getElementById('server-overview-list');
+
+function escapeServerHtml(value) {
+    return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+async function loadServerOverview() {
+    if (!serverOverviewListDiv) return;
+    serverOverviewListDiv.innerHTML = '<span class="loading loading-spinner loading-md"></span>';
+    try {
+        const response = await fetch('/admin/status');
+        if (!response.ok) throw new Error(response.statusText);
+        const status = await response.json();
+        window.currentProxyStatus = status;
+        renderServerOverview(status.servers || []);
+    } catch (error) {
+        serverOverviewListDiv.innerHTML = `<div class="alert alert-error">Could not load live server status: ${escapeServerHtml(error.message)}</div>`;
+    }
+}
+
+function renderServerOverview(servers) {
+    if (!serverOverviewListDiv) return;
+    if (!servers.length) {
+        serverOverviewListDiv.innerHTML = '<div class="alert">No servers configured.</div>';
+        return;
+    }
+    serverOverviewListDiv.innerHTML = servers.slice().sort((a, b) => a.name.localeCompare(b.name)).map(server => {
+        const health = server.health || { state: 'checking' };
+        const stateClass = health.state === 'connected' ? 'badge-success' : health.state === 'error' ? 'badge-error' : health.state === 'inactive' ? 'badge-ghost' : 'badge-info';
+        const counts = server.toolCounts || {};
+        const href = `/admin/servers/${encodeURIComponent(server.key)}`;
+        return `<article class="server-overview card border border-base-300 bg-base-100 shadow-sm">
+            <div class="card-body gap-3 lg:flex-row lg:items-center">
+                <div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><h3 class="text-lg font-semibold">${escapeServerHtml(server.name)}</h3><span class="badge ${stateClass}">${escapeServerHtml(health.state)}</span><span class="badge badge-outline">${escapeServerHtml(server.transportType)}</span></div>
+                <p class="mt-1 break-all text-sm text-base-content/60">${escapeServerHtml(server.key)}</p>
+                <div class="mt-2 flex flex-wrap gap-2 text-sm"><span class="badge badge-neutral">${counts.exposed || 0} exposed</span><span class="badge badge-outline">${counts.discovered || 0} discovered</span>${counts.disabled ? `<span class="badge badge-warning">${counts.disabled} disabled</span>` : ''}${counts.problems ? `<span class="badge badge-error">${counts.problems} problems</span>` : ''}</div>
+                ${health.error ? `<p class="mt-2 text-sm text-error">${escapeServerHtml(health.error)}</p>` : ''}</div>
+                <a class="btn btn-primary btn-sm" href="${href}">View server</a>
+            </div></article>`;
+    }).join('');
+}
+
+async function renderServerDetail(serverKey) {
+    const config = window.currentServerConfig?.mcpServers?.[serverKey];
+    const status = window.currentProxyStatus || { servers: [], tools: [] };
+    const server = (status.servers || []).find(item => item.key === serverKey);
+    const header = document.getElementById('server-detail-header');
+    const overview = document.getElementById('server-detail-overview');
+    const tools = document.getElementById('server-detail-tools');
+    if (!config || !header || !overview || !tools) return false;
+    const health = server?.health || { state: config.active === false ? 'inactive' : 'checking' };
+    header.innerHTML = `<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div class="flex flex-wrap items-center gap-2"><h2 class="text-2xl font-semibold">${escapeServerHtml(config.name || serverKey)}</h2><span class="badge ${health.state === 'connected' ? 'badge-success' : health.state === 'error' ? 'badge-error' : 'badge-ghost'}">${escapeServerHtml(health.state)}</span><span class="badge badge-outline">${escapeServerHtml(config.type)}</span></div><p class="mt-1 font-mono text-sm text-base-content/60">${escapeServerHtml(serverKey)}</p></div><button id="refresh-server-button" class="btn btn-outline btn-sm">Refresh health</button></div>`;
+    overview.innerHTML = `<div class="grid gap-4 md:grid-cols-3"><div class="stat rounded-box border border-base-300"><div class="stat-title">Exposed tools</div><div class="stat-value text-primary">${server?.toolCounts?.exposed || 0}</div></div><div class="stat rounded-box border border-base-300"><div class="stat-title">Discovered tools</div><div class="stat-value">${server?.toolCounts?.discovered || 0}</div></div><div class="stat rounded-box border border-base-300"><div class="stat-title">Last checked</div><div class="stat-desc">${health.checkedAt ? escapeServerHtml(new Date(health.checkedAt).toLocaleString()) : 'Not checked yet'}</div></div></div>${health.error ? `<div class="alert alert-error mt-4">${escapeServerHtml(health.error)}</div>` : ''}`;
+    const serverTools = (status.tools || []).filter(tool => tool.serverName === serverKey);
+    tools.innerHTML = serverTools.length ? `<div class="space-y-3">${serverTools.map(tool => `<article class="card border border-base-300 bg-base-100"><div class="card-body py-4"><div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between"><div><h3 class="font-semibold">${escapeServerHtml(tool.qualifiedName)}</h3><p class="text-sm text-base-content/60">${escapeServerHtml(tool.description || 'No description')}</p></div><div class="flex flex-wrap gap-2"><span class="badge ${tool.proxyState === 'exposed' ? 'badge-success' : tool.proxyState === 'disabled' ? 'badge-warning' : 'badge-error'}">${escapeServerHtml(tool.proxyState)}</span><span class="badge badge-outline">${escapeServerHtml(tool.effectiveToolType || 'unspecified')}</span></div></div></div></article>`).join('')}</div>` : '<div class="alert">No tools are currently associated with this server.</div>';
+    header.querySelector('#refresh-server-button')?.addEventListener('click', async () => {
+        const button = header.querySelector('#refresh-server-button'); button.disabled = true; button.textContent = 'Refreshing…';
+        try { await fetch(`/admin/servers/${encodeURIComponent(serverKey)}/refresh`, { method: 'POST', headers: csrfHeaders({}) }); await loadServerOverview(); await renderServerDetail(serverKey); }
+        finally { button.disabled = false; button.textContent = 'Refresh health'; }
+    });
+    renderServerConfig({ mcpServers: { [serverKey]: config } });
+    return true;
+}
 // saveConfigButton and saveStatus are obtained within initializeServerSaveListener
 
 // --- Server Configuration Management ---
@@ -464,6 +527,8 @@ function initializeServerSaveListener() {
 
 // Expose functions to be called from script.js
 window.loadServerConfig = loadServerConfig;
+window.loadServerOverview = loadServerOverview;
+window.renderServerDetail = renderServerDetail;
 window.renderServerEntry = renderServerEntry; // Keep this exposed if script.js uses it directly
 window.addInstallButtonListeners = addInstallButtonListeners;
 window.handleInstallClick = handleInstallClick;

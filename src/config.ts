@@ -62,6 +62,9 @@ export interface ToolSettings {
   enabled: boolean;
   exposedName?: string;
   exposedDescription?: string;
+  /** Canonical proxy safety classification override. */
+  toolType?: 'read' | 'write' | 'destructive';
+  /** @deprecated Read for backwards compatibility; write toolType instead. */
   callType?: 'read' | 'write' | 'destructive';
 }
 
@@ -418,6 +421,11 @@ try {
  for (const toolKey in parsedConfig.tools) {
      if (typeof parsedConfig.tools[toolKey]?.enabled !== 'boolean') {
           logger.warn(`Invalid setting for tool "${toolKey}" in tool_config.json: 'enabled' is missing or not a boolean. Assuming enabled.`);
+     }
+     const toolType = parsedConfig.tools[toolKey]?.toolType;
+     if (toolType !== undefined && !['read', 'write', 'destructive'].includes(toolType)) {
+          logger.warn(`Invalid toolType for tool "${toolKey}" in tool_config.json. Ignoring it.`);
+          delete parsedConfig.tools[toolKey].toolType;
      }
  }
 

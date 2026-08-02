@@ -1,34 +1,16 @@
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 
-type CallType = 'read' | 'write' | 'destructive';
-
-const DESTRUCTIVE_PREFIXES = [
-  'delete', 'remove', 'destroy', 'drop', 'purge', 'truncate',
-  'wipe', 'terminate', 'kill', 'revoke', 'force', 'reset', 'disable', 'cancel',
-];
-
-const READ_PREFIXES = [
-  'get', 'list', 'read', 'fetch', 'search', 'find', 'describe',
-  'show', 'view', 'check', 'inspect', 'stat', 'info', 'lookup',
-  'query', 'browse', 'ping', 'validate',
-];
+type CallType = 'read' | 'write' | 'destructive' | 'unspecified';
 
 const CALL_TYPE_CONFIG: Record<CallType, { colour: string; emoji: string; label: string }> = {
   destructive: { colour: '#e01e5a', emoji: '🔴', label: 'DESTRUCTIVE' },
   write:       { colour: '#e8a838', emoji: '🟡', label: 'WRITE' },
   read:        { colour: '#2eb886', emoji: '🟢', label: 'READ' },
+  unspecified: { colour: '#64748b', emoji: '⚪', label: 'UNSPECIFIED' },
 };
 
-export function classifyCallType(toolOriginalName: string, override?: CallType): CallType {
-  if (override) return override;
-  const lower = toolOriginalName.toLowerCase();
-  if (DESTRUCTIVE_PREFIXES.some(p => lower === p || lower.startsWith(`${p}_`) || lower.startsWith(`${p}-`))) {
-    return 'destructive';
-  }
-  if (READ_PREFIXES.some(p => lower === p || lower.startsWith(`${p}_`) || lower.startsWith(`${p}-`))) {
-    return 'read';
-  }
-  return 'write';
+export function classifyCallType(_toolOriginalName: string, override?: Exclude<CallType, 'unspecified'>): CallType {
+  return override || 'unspecified';
 }
 
 export interface SlackNotifyParams {
@@ -40,7 +22,7 @@ export interface SlackNotifyParams {
   success: boolean;
   errorMessage?: string;
   durationMs: number;
-  callTypeOverride?: CallType;
+  callTypeOverride?: Exclude<CallType, 'unspecified'>;
 }
 
 export async function sendToolCallNotification(params: SlackNotifyParams): Promise<void> {

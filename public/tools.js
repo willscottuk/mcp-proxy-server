@@ -182,7 +182,9 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
     const exposedNameOverride = toolConfig.exposedName || '';
     const exposedDescriptionOverride = toolConfig.exposedDescription || '';
     const isEnabled = toolConfig.enabled !== false;
-    const callType = toolConfig.callType || '';
+    const callType = toolConfig.toolType || toolConfig.callType || '';
+    const effectiveToolType = toolDefinition?.effectiveToolType || callType || 'unspecified';
+    const toolTypeSource = toolDefinition?.toolTypeSource || (callType ? 'override' : 'unspecified');
     const originalDescription = toolDefinition?.description || 'N/A';
     const transportType = toolDefinition?.transportType || 'unknown';
     const serverName = toolDefinition?.serverName || toolKey.split(serverToolnameSeparator)[0] || 'Unknown';
@@ -205,7 +207,7 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
                             <span class="badge badge-outline">${escapeHtml(serverName)}</span>
                             <span class="badge badge-neutral">${escapeHtml(transportType)}</span>
                             <span class="badge ${isEnabled ? 'badge-success' : 'badge-ghost'}">${isEnabled ? 'Enabled' : 'Disabled'}</span>
-                            <span class="badge ${callType === 'destructive' ? 'badge-error' : callType === 'write' ? 'badge-warning' : callType === 'read' ? 'badge-success' : 'badge-outline'}">${escapeHtml(callType || 'Auto call type')}</span>
+                            <span class="badge ${effectiveToolType === 'destructive' ? 'badge-error' : effectiveToolType === 'write' ? 'badge-warning' : effectiveToolType === 'read' ? 'badge-success' : 'badge-ghost'}">${escapeHtml(effectiveToolType)} (${escapeHtml(toolTypeSource)})</span>
                             ${hasOutputSchema ? '<span class="badge badge-info">Structured output</span>' : ''}
                             ${mappingCount ? `<span class="badge badge-secondary">${mappingCount} header mapping${mappingCount === 1 ? '' : 's'}</span>` : ''}
                             ${taskSupport ? `<span class="badge badge-outline">Task ${escapeHtml(taskSupport)}</span>` : ''}
@@ -223,9 +225,9 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
                         <p class="mt-1 text-xs text-base-content/60">Must be unique and contain only letters, numbers, underscores, or hyphens. It cannot start with a number.</p>
                     </div>
                     <div>
-                        <label class="label"><span class="label-text">Call Type</span></label>
+                        <label class="label"><span class="label-text">Tool type</span></label>
                         <select class="tool-calltype-input select select-bordered w-full">
-                            <option value="" ${callType === '' ? 'selected' : ''}>Auto</option>
+                            <option value="" ${callType === '' ? 'selected' : ''}>Use upstream metadata</option>
                             <option value="read" ${callType === 'read' ? 'selected' : ''}>Read</option>
                             <option value="write" ${callType === 'write' ? 'selected' : ''}>Write</option>
                             <option value="destructive" ${callType === 'destructive' ? 'selected' : ''}>Destructive</option>
@@ -251,6 +253,11 @@ function renderToolEntry(toolKey, toolDefinition, toolConfig, isConfigOnly = fal
                         <div class="text-xs font-semibold uppercase tracking-wide text-base-content/60">Original Description</div>
                         <p class="mt-1 whitespace-pre-wrap text-sm">${escapeHtml(originalDescription)}</p>
                     </div>
+                </div>
+                <div class="rounded-box border border-primary/30 bg-primary/5 p-4">
+                    <div class="text-xs font-semibold uppercase tracking-wide text-base-content/60">MCP client receives</div>
+                    <p class="mt-1 text-sm"><strong>Effective type:</strong> ${escapeHtml(effectiveToolType)} (${escapeHtml(toolTypeSource)})</p>
+                    ${renderJsonPanel('Effective annotations', toolDefinition?.effectiveAnnotations)}
                 </div>
                 <div class="grid gap-4 xl:grid-cols-2">
                     ${renderJsonPanel('Input Schema', toolDefinition?.inputSchema)}
@@ -359,10 +366,10 @@ function initializeToolSaveListener() {
                 enabled: isEnabled,
                 exposedName: exposedNameOverride || undefined,
                 exposedDescription: exposedDescriptionOverride || undefined,
-                callType: callTypeOverride || undefined,
+                toolType: callTypeOverride || undefined,
             };
 
-            if (configData.enabled === false || configData.exposedName || configData.exposedDescription || configData.callType) {
+            if (configData.enabled === false || configData.exposedName || configData.exposedDescription || configData.toolType) {
                 newToolConfig.tools[toolKey] = configData;
             }
         });

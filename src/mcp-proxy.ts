@@ -29,6 +29,11 @@ let lastToolListFingerprint = '';
 let currentToolConfig: ToolConfig = { tools: {} }; // Store loaded tool config
 let currentActiveServersConfig: Record<string, TransportConfig> = {}; // Added for retry logic
 let currentSeparator: string = DEFAULT_SERVER_TOOLNAME_SEPERATOR; // Store the current separator
+type ToolType = 'read' | 'write' | 'destructive';
+type ServerHealth = 'inactive' | 'checking' | 'connected' | 'error';
+type ToolCatalogueEntry = ToolMapEntry & { qualifiedName: string; proxyState: 'exposed' | 'disabled' | 'rejected'; rejectionReason?: string };
+const serverHealth = new Map<string, { state: ServerHealth; checkedAt: string; error?: string }>();
+const toolCatalogue = new Map<string, ToolCatalogueEntry>();
 
 const TOOLS_LIST_TTL_MS = 300_000;
 const TOOLS_LIST_PAGE_SIZE = 1_000;
@@ -167,6 +172,30 @@ function inspectToolForProxying(tool: Tool, connectedClient: ConnectedClient): {
   return { valid: true, mcpHeaderMappings: mappings };
 }
 
+export function toolTypeFromAnnotations(annotations: Tool['annotations']): ToolType | undefined {
+  if (annotations?.readOnlyHint === true) return 'read';
+  if (annotations?.readOnlyHint === false && annotations.destructiveHint === false) return 'write';
+  if (annotations?.readOnlyHint === false && annotations.destructiveHint === true) return 'destructive';
+  return undefined;
+}
+
+function configuredToolType(settings: ToolConfig['tools'][string] | undefined): ToolType | undefined {
+  return settings?.toolType || settings?.callType;
+}
+
+function annotationsForToolType(annotations: Tool['annotations'], toolType: ToolType | undefined): Tool['annotations'] {
+  if (!toolType) return annotations;
+  const next = { ...(annotations || {}) } as NonNullable<Tool['annotations']>;
+  if (toolType === 'read') {
+    next.readOnlyHint = true;
+    delete next.destructiveHint;
+  } else {
+    next.readOnlyHint = false;
+    next.destructiveHint = toolType === 'destructive';
+  }
+  return next;
+}
+
 function getArgumentAtPath(args: JsonObject, path: string[]): unknown {
   let current: unknown = args;
   for (const segment of path) {
@@ -258,6 +287,7 @@ function buildExposedTools(): Tool[] {
       ...toolInfo,
       name: overrideSettings?.exposedName || originalQualifiedName,
       description: overrideSettings?.exposedDescription || toolInfo.description,
+      annotations: annotationsForToolType(toolInfo.annotations, configuredToolType(overrideSettings)),
     });
   }
   return enabledTools.sort((a, b) => a.name.localeCompare(b.name));
@@ -308,7 +338,7 @@ async function notifyToolListChangedIfNeeded() {
 }
 
 // --- Function to update backend connections and maps ---
-export const updateBackendConnections = async (newServerConfig: Config, newToolConfig: ToolConfig) => {
+export const updateBackendConnections = async (newServerConfig: Config, newToolConfig: ToolConfig, forceReconnectKeys = new Set<string>()) => {
     return Sentry.startSpan(
         {
             name: 'updateBackendConnections',
@@ -333,7 +363,9 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
             const isActive = !(serverConf.active === false || String(serverConf.active).toLowerCase() === 'false');
             if (isActive) {
                 activeServersConfigLocal[serverKey] = serverConf;
+                serverHealth.set(serverKey, { state: 'checking', checkedAt: new Date().toISOString() });
             } else {
+                 serverHealth.set(serverKey, { state: 'inactive', checkedAt: new Date().toISOString() });
                  const serverName = serverKey;
                  logger.log(`Skipping inactive server during update: ${serverName}`);
             }
@@ -344,9 +376,11 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
     const newClientKeys = new Set(Object.keys(activeServersConfigLocal));
     const currentClientKeys = new Set(currentConnectedClients.map(c => c.name));
 
-    const clientsToRemove = currentConnectedClients.filter(c => !newClientKeys.has(c.name));
-    const clientsToKeep = currentConnectedClients.filter(c => newClientKeys.has(c.name));
-    const keysToAdd = Object.keys(activeServersConfigLocal).filter(key => !currentClientKeys.has(key));
+    const clientsToReplace = currentConnectedClients.filter(c => newClientKeys.has(c.name) && (forceReconnectKeys.has(c.name) || JSON.stringify(c.config) !== JSON.stringify(activeServersConfigLocal[c.name])));
+    const replacementKeys = new Set(clientsToReplace.map(c => c.name));
+    const clientsToRemove = currentConnectedClients.filter(c => !newClientKeys.has(c.name) || replacementKeys.has(c.name));
+    const clientsToKeep = currentConnectedClients.filter(c => newClientKeys.has(c.name) && !replacementKeys.has(c.name));
+    const keysToAdd = Object.keys(activeServersConfigLocal).filter(key => !currentClientKeys.has(key) || replacementKeys.has(key));
 
     logger.log(`Clients to remove: ${clientsToRemove.map(c => c.name).join(', ') || 'None'}`);
     logger.log(`Clients to keep: ${clientsToKeep.map(c => c.name).join(', ') || 'None'}`);
@@ -377,11 +411,18 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
 
     // 3. Update the main list
     currentConnectedClients = [...clientsToKeep, ...newlyConnectedClients];
+    const connectedKeys = new Set(currentConnectedClients.map(client => client.name));
+    for (const key of Object.keys(activeServersConfigLocal)) {
+      serverHealth.set(key, connectedKeys.has(key)
+        ? { state: 'connected', checkedAt: new Date().toISOString() }
+        : { state: 'error', checkedAt: new Date().toISOString(), error: 'Could not connect to the server. Check the server configuration and logs.' });
+    }
     logger.log(`Total active clients after update: ${currentConnectedClients.length}`);
 
     // 4. Clear and repopulate maps immediately (important for consistency)
     logger.log("Clearing and repopulating internal maps (tools, resources, prompts)...");
     toolToClientMap.clear();
+    toolCatalogue.clear();
     resourceToClientMap.clear();
     promptToClientMap.clear();
 
@@ -394,17 +435,24 @@ export const updateBackendConnections = async (newServerConfig: Config, newToolC
                     const qualifiedName = `${connectedClient.name}${currentSeparator}${tool.name}`; // Use the current separator
                     const toolSettings = currentToolConfig.tools[qualifiedName];
                     const isEnabled = !toolSettings || toolSettings.enabled !== false;
-                    if (isEnabled) {
-                        const inspection = inspectToolForProxying(tool, connectedClient);
-                        if (!inspection.valid) {
-                            continue;
-                        }
+                    const inspection = inspectToolForProxying(tool, connectedClient);
+                    const catalogueEntry: ToolCatalogueEntry = {
+                      qualifiedName,
+                      client: connectedClient,
+                      toolInfo: tool,
+                      mcpHeaderMappings: inspection.mcpHeaderMappings,
+                      proxyState: !isEnabled ? 'disabled' : inspection.valid ? 'exposed' : 'rejected',
+                      rejectionReason: inspection.valid ? undefined : 'Invalid HTTP header mappings',
+                    };
+                    toolCatalogue.set(qualifiedName, catalogueEntry);
+                    if (isEnabled && inspection.valid) {
                         // Store the client and the full tool info from the backend
                         toolToClientMap.set(qualifiedName, { client: connectedClient, toolInfo: tool, mcpHeaderMappings: inspection.mcpHeaderMappings });
                     }
                 }
             }
         } catch (error: any) {
+             serverHealth.set(connectedClient.name, { state: 'error', checkedAt: new Date().toISOString(), error: `Connected, but tools discovery failed: ${error?.message || error}` });
              if (!(error?.code === -32601)) { // Ignore 'Method not found'
                  logger.error(`Error fetching tools from ${connectedClient.name} during map update:`, error?.message || error);
              }
@@ -580,8 +628,11 @@ async function refreshBackendConnection(serverKey: string, serverConfig: Transpo
 
 // --- Function to get current proxy state ---
 export const getCurrentProxyState = () => {
-    // Return copies or relevant info to avoid direct mutation
-    const tools = Array.from(toolToClientMap.entries()).map(([qualifiedName, { client: connectedClient, toolInfo, mcpHeaderMappings }]) => {
+    const tools: any[] = Array.from(toolCatalogue.values()).map(({ qualifiedName, client: connectedClient, toolInfo, mcpHeaderMappings, proxyState, rejectionReason }) => {
+        const settings = currentToolConfig.tools[qualifiedName];
+        const overrideType = configuredToolType(settings);
+        const upstreamToolType = toolTypeFromAnnotations(toolInfo.annotations);
+        const effectiveToolType = overrideType || upstreamToolType;
         return {
             qualifiedName,
             name: toolInfo.name,
@@ -595,11 +646,44 @@ export const getCurrentProxyState = () => {
             icons: (toolInfo as any).icons,
             _meta: toolInfo._meta,
             mcpHeaderMappings,
+            proxyState,
+            rejectionReason,
+            upstreamToolType: upstreamToolType || 'unspecified',
+            effectiveToolType: effectiveToolType || 'unspecified',
+            toolTypeSource: overrideType ? 'override' : upstreamToolType ? 'upstream' : 'unspecified',
+            effectiveAnnotations: annotationsForToolType(toolInfo.annotations, overrideType),
         };
     });
-    // Could add resources and prompts here if needed by admin UI later
-    // Also return the current separator for the frontend
-    return { tools, serverToolnameSeparator: currentSeparator };
+    const configuredToolKeys = new Set(tools.map(tool => tool.qualifiedName));
+    for (const [qualifiedName, settings] of Object.entries(currentToolConfig.tools || {})) {
+      if (!configuredToolKeys.has(qualifiedName)) {
+        const serverName = qualifiedName.split(currentSeparator)[0] || 'Unknown';
+        tools.push({
+          qualifiedName, name: qualifiedName.split(currentSeparator).slice(1).join(currentSeparator) || qualifiedName,
+          serverName, transportType: 'unknown', description: undefined, inputSchema: undefined, outputSchema: undefined,
+          annotations: undefined, execution: undefined, icons: undefined, _meta: undefined, mcpHeaderMappings: [],
+          proxyState: 'missing', rejectionReason: 'Configured but not currently discovered from this server.',
+          upstreamToolType: 'unspecified', effectiveToolType: configuredToolType(settings) || 'unspecified',
+          toolTypeSource: configuredToolType(settings) ? 'override' : 'unspecified', effectiveAnnotations: undefined,
+        });
+      }
+    }
+    const servers: any[] = Object.entries(currentActiveServersConfig).map(([key, config]) => {
+      const health = serverHealth.get(key) || { state: 'checking' as ServerHealth, checkedAt: new Date().toISOString() };
+      const serverTools = tools.filter(tool => tool.serverName === key);
+      return { key, name: config.name || key, transportType: config.type, active: true, health, toolCounts: {
+        discovered: serverTools.filter(tool => tool.proxyState !== 'missing').length,
+        exposed: serverTools.filter(tool => tool.proxyState === 'exposed').length,
+        disabled: serverTools.filter(tool => tool.proxyState === 'disabled').length,
+        problems: serverTools.filter(tool => tool.proxyState === 'rejected' || tool.proxyState === 'missing').length,
+      }};
+    });
+    for (const [key, health] of serverHealth.entries()) {
+      if (!servers.some(server => server.key === key) && health.state === 'inactive') {
+        servers.push({ key, name: key, transportType: 'unknown', active: false, health, toolCounts: { discovered: 0, exposed: 0, disabled: 0, problems: 0 } });
+      }
+    }
+    return { tools, servers, checkedAt: new Date().toISOString(), serverToolnameSeparator: currentSeparator };
 };
 
 // Helper function to identify connection errors
