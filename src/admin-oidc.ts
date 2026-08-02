@@ -78,7 +78,7 @@ export async function discoverOidcClient(settings: OidcSettings): Promise<oidc.C
     new URL(settings.issuer),
     settings.clientId,
     undefined,
-    oidc.ClientSecretBasic(settings.clientSecret),
+    oidc.ClientSecretPost(settings.clientSecret),
   );
 }
 

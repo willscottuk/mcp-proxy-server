@@ -53,6 +53,17 @@ This file defines the backend MCP servers the proxy should connect to.
 Example `config/mcp_server.json`:
 ```json
 {
+  "proxy": {
+    "serverInfo": {
+      "icons": [
+        {
+          "src": "https://mcp.example.com/assets/icon.svg",
+          "mimeType": "image/svg+xml",
+          "sizes": ["any"]
+        }
+      ]
+    }
+  },
   "mcpServers": {
     "unique-server-key1": {
       "type": "stdio",
@@ -95,6 +106,7 @@ Example `config/mcp_server.json`:
 ```
 
 **Fields:**
+-   `proxy.serverInfo.icons`: (Optional) Icons advertised for this proxy in its MCP `initialize` response. Each icon needs an absolute URL in `src`; `mimeType` and `sizes` are optional. Use `"any"` for scalable SVGs or dimensions such as `"48x48"` for raster images. Serve icons from the proxy's public origin or another domain clients trust. Clients may choose not to display them. Restart the proxy after changing this setting so every active transport receives the updated server metadata.
 -   `mcpServers`: (Required) An object where each key is a unique identifier for a backend server.
 -   `name`: (Optional) A user-friendly display name for the server (used in Admin UI).
 -   `active`: (Optional, default: `true`) Set to `false` to prevent the proxy from connecting to this server.
@@ -184,7 +196,7 @@ Example `config/tool_config.json`:
             require_pkce: true
             pkce_challenge_method: 'S256'
     ```
-    Configure Authelia's stored client-secret representation according to its documentation, and pass the corresponding raw secret to `OIDC_CLIENT_SECRET`.
+    The client must allow the `client_secret_post` token endpoint authentication method. Configure Authelia's stored client-secret representation according to its documentation, and pass the corresponding raw secret to `OIDC_CLIENT_SECRET`.
 -   **`SESSION_SECRET`**: Secret used to sign Admin UI session cookies. A secure secret is automatically generated and saved to `config/.session_secret` on first run if not provided.
     ```bash
     # Generate a strong secret: openssl rand -hex 32
