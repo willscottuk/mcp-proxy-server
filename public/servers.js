@@ -290,7 +290,7 @@ function renderServerEntry(key, serverConf, startExpanded = false) {
         detailsHtml += `
             <div class="mt-4 grid gap-4 lg:grid-cols-2">
                 <div><label class="label"><span class="label-text">Command</span></label><input type="text" class="server-command-input input input-bordered w-full" value="${serverConf.command || ''}" required></div>
-                <div><label class="label"><span class="label-text">Arguments (comma-separated)</span></label><input type="text" class="server-args-input input input-bordered w-full" value="${(serverConf.args || []).join(', ')}"></div>
+                <div><label class="label"><span class="label-text">Arguments (one per line)</span></label><textarea class="server-args-input textarea textarea-bordered min-h-28 w-full" spellcheck="false" placeholder="One complete argument per line">${escapeServerHtml((serverConf.args || []).join('\n'))}</textarea><p class="mt-1 text-xs text-base-content/60">Quotes and commas are preserved, so JSON can be entered as one argument.</p></div>
             </div>
             <div class="mt-4 rounded-box border border-base-300 bg-base-200/40 p-4">
                 <label class="label px-0 pt-0"><span class="label-text">Environment Variables</span></label>
@@ -557,8 +557,7 @@ function initializeServerSaveListener() {
                 serverData.command = commandInput.value.trim();
                 if (!serverData.command) { isValid = false; errorMsg = `Command required for Stdio server "${newKey}".`; commandInput.style.border = '1px solid red'; }
                 else { commandInput.style.border = ''; }
-                const argsString = argsInput.value.trim();
-                serverData.args = argsString ? argsString.split(',').map(arg => arg.trim()).filter(arg => arg) : [];
+                serverData.args = argsInput.value.split(/\r?\n/).map(arg => arg.trim()).filter(arg => arg);
                 serverData.env = {};
                 if (envVarsContainer) {
                     envVarsContainer.querySelectorAll('.env-var-row').forEach(row => {
