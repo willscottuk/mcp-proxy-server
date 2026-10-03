@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branch:
+    branches:
       - main
   workflow_dispatch:
 
@@ -17,6 +17,7 @@ jobs:
       should_release: ${{ steps.check_version.outputs.should_release }}
       version: ${{ steps.get_package_version.outputs.version }} # Pass version to next job
       tag_name: v${{ steps.get_package_version.outputs.version }} # Pass tag name to next job
+      latest_tag: ${{ steps.get_latest_tag.outputs.latest_tag }} # Changelog starts from here
     # Only run if the commit message doesn't contain '[skip release]'
     if: "!contains(github.event.head_commit.message, '[skip release]')"
     steps:
@@ -74,7 +75,7 @@ jobs:
         with:
           mode: "HYBRID"
           # Explicitly define the range: from the last release tag to the current commit SHA
-          fromTag: ${{ steps.get_latest_tag.outputs.latest_tag }}
+          fromTag: ${{ needs.check_version.outputs.latest_tag }}
           toTag: ${{ github.sha }}
           configurationJson: |
             {
@@ -136,8 +137,21 @@ jobs:
         with:
           tag_name: ${{ needs.check_version.outputs.tag_name }}
           name: Release ${{ needs.check_version.outputs.tag_name }}
+          target_commitish: ${{ github.sha }} # Tag the commit that was released, not wherever main is
           body: ${{ steps.github_release.outputs.changelog }} # Use generated changelog from the correct step ID
           # Optional: Mark as pre-release if version contains '-'
           # prerelease: ${{ contains(needs.check_version.outputs.version, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish_image:
+    name: Publish Docker Image
+    # Runs after the release rather than racing it: a release created by
+    # GITHUB_TOKEN does not trigger other workflows, and a separate push-
+    # triggered build can see the new tag first and skip itself.
+    needs: create_release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yml
+    secrets: inherit
