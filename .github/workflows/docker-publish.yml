@@ -2,9 +2,7 @@
 name: Build and Publish Docker Image to GHCR
 
 on:
-  push:
-    branches:
-      - main # Trigger on push to main branch
+  workflow_call: # Called by release.yml once a new version has been released
   workflow_dispatch: # Allows manual triggering
 
 permissions:
@@ -29,54 +27,7 @@ jobs:
         id: get_version
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      - name: Compare package version with latest release tag
-        id: compare_versions
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const packageVersion = "${{ steps.get_version.outputs.version }}";
-            console.log(`Package version: ${packageVersion}`);
-
-            if (context.eventName === 'workflow_dispatch') {
-              console.log('Manual trigger detected. Skipping version check and forcing build.');
-              core.setOutput('needs_build', 'true');
-            } else {
-              console.log('Push trigger detected. Comparing package version with latest release tag.');
-              try {
-                const latestRelease = await github.rest.repos.getLatestRelease({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                });
-
-                const latestTag = latestRelease.data.tag_name;
-                console.log(`Latest release tag: ${latestTag}`);
-
-                // Assuming tag is like 'v1.2.3', remove 'v' prefix
-                const latestVersion = latestTag.startsWith('v') ? latestTag.substring(1) : latestTag;
-                console.log(`Latest release version: ${latestVersion}`);
-
-                if (packageVersion !== latestVersion) {
-                  console.log('Version mismatch. Build needed.');
-                  core.setOutput('needs_build', 'true');
-                } else {
-                  console.log('Versions match. No build needed.');
-                  core.setOutput('needs_build', 'false');
-                }
-              } catch (error) {
-                // Handle case where no releases exist yet or API error
-                if (error.status === 404) {
-                  console.log('No releases found. Build needed.');
-                  core.setOutput('needs_build', 'true');
-                } else {
-                  console.error('Error fetching latest release:', error);
-                  core.setFailed(`Error fetching latest release: ${error.message}`);
-                  core.setOutput('needs_build', 'false'); // Don't build on error
-                }
-              }
-            }
-
       - name: Log in to GitHub Container Registry
-        if: steps.compare_versions.outputs.needs_build == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -84,11 +35,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        if: steps.compare_versions.outputs.needs_build == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Append ENTRYPOINT and CMD to Dockerfile for standalone build
-        if: steps.compare_versions.outputs.needs_build == 'true'
         run: |
           echo '' >> Dockerfile # Add a newline for separation
           echo '# Added by GitHub Actions for standalone build' >> Dockerfile
@@ -98,7 +47,6 @@ jobs:
           cat Dockerfile
 
       - name: Build and push standard Docker image
-        if: steps.compare_versions.outputs.needs_build == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -113,7 +61,6 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push bundled Docker image
-        if: steps.compare_versions.outputs.needs_build == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
