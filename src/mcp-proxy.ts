@@ -13,6 +13,7 @@ import { Config, loadConfig, TransportConfig, isSSEConfig, isStdioConfig, isHttp
 import * as eventsource from 'eventsource';
 import { isSentryEnabled, Sentry } from './instrumentation.js';
 import { sendToolCallNotification } from './slack-webhook.js';
+import { mergeAdjacentTextContent } from './tool-result.js';
 import { wrapMcpServerWithSentry } from '@sentry/node';
 
 global.EventSource = eventsource.EventSource;
@@ -947,7 +948,7 @@ export const createServer = async (initializeProxy = true, registerNotificationS
                 durationMs: Date.now() - callStartTime,
                 callTypeOverride: currentToolConfig.tools?.[originalQualifiedName]?.callType,
             }).catch(() => {});
-            return backendResponse as any; // Backend response is validated by the upstream server.
+            return mergeAdjacentTextContent(backendResponse) as any; // Backend response is validated by the upstream server.
         } catch (error: any) {
             lastError = error;
             logger.warn(`Attempt ${attempt + 1} to call tool '${requestedExposedName}' failed: ${error.message}`);
